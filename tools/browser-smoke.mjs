@@ -141,6 +141,7 @@ async function pressKey(key, code, keyCode) {
     windowsVirtualKeyCode: keyCode,
     nativeVirtualKeyCode: keyCode,
   });
+  await new Promise((resolve) => setTimeout(resolve, 40));
   await send('Input.dispatchKeyEvent', {
     type: 'keyUp',
     key,
