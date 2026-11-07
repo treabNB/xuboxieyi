@@ -38,12 +38,25 @@ https://yuboxieyi.netlify.app/
 
 战斗中采用严格 116° 主视锥和 620px 视野。视野随角色朝向旋转，并被掩体遮挡；扇形攻击预览和实际射线使用同一套障碍物求交，墙后目标既不可见也不会被射线穿透。
 
-## Netlify 部署
+## GitHub Pages 部署
 
-- 从仓库根目录部署时，`netlify.toml` 会发布 `submission/`。
-- 直接拖拽部署时，使用 `release/yuboxieyi-netlify.zip`；ZIP 根目录已经是可发布的游戏站点。
-- 若误将整个工作区作为静态站点根目录部署，根目录 `index.html` 会自动跳转到 `submission/`，不会白屏。
-- 不建议直接在手机竖屏游玩；当前目标环境是桌面横屏鼠标操作。
+- `.github/workflows/deploy-pages.yml` 会把 `submission/` 发布到 GitHub Pages。
+- Pages 默认地址：`https://treabnb.github.io/xuboxieyi/`
+- 自定义域名：`https://xuboxieyi.cc.cd/`
+- `submission/CNAME` 已设置为 `xuboxieyi.cc.cd`。
+
+DNSHE 中需要将 `xuboxieyi.cc.cd` 的记录配置为：
+
+```text
+类型: CNAME
+主机记录: @
+记录值: treabnb.github.io
+TTL: 600 / Auto
+```
+
+如果 DNSHE 面板把 `xuboxieyi` 显示为主域名的子记录，则主机记录填写 `xuboxieyi`，记录值保持不变。DNS 生效后，在 GitHub 仓库的 Pages 设置中启用 HTTPS。
+
+不建议直接在手机竖屏游玩；当前目标环境是桌面横屏鼠标操作。
 
 ## 数值
 
