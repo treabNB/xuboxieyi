@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      name="description"
+      content="余波协议：支持 2–4 人房间联机的浏览器 2D 射击对战。"
+    >
+    <title>余波协议 / AFTERSHOT</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main id="app" class="game-shell">
+      <section id="game-stage" class="game-stage" aria-label="余波协议游戏战场">
+        <div id="game-canvas" aria-hidden="true"></div>
+
+        <header class="top-hud">
+          <div class="brand-lockup">
+            <span class="brand-index">AS–01</span>
+            <span class="brand-name">AFTERSHOT</span>
+          </div>
+          <div class="match-readout" aria-label="当前战况">
+            <div class="team-score team-score--blue">
+              <span>06</span>
+              <small>本机</small>
+            </div>
+            <div class="clock-block">
+              <strong id="match-clock">01:27</strong>
+              <span id="match-state">交战中</span>
+            </div>
+            <div class="team-score team-score--red">
+              <span>04</span>
+              <small>对手</small>
+            </div>
+          </div>
+          <div class="session-readout">
+            <span id="room-label">练习场</span>
+            <strong id="network-status">本地</strong>
+            <button id="pause-button" class="pause-button" type="button">ESC 菜单</button>
+          </div>
+        </header>
+
+        <div class="map-stamp" aria-hidden="true">
+          <span id="map-stamp-name">靶场 C–09</span>
+          <span>视野 116° / LOS</span>
+        </div>
+
+        <aside id="feed" class="combat-feed" aria-live="polite" aria-label="对局事件"></aside>
+
+        <section id="entry-panel" class="entry-panel" aria-labelledby="entry-title">
+          <p class="eyebrow">AFTERSHOT / <span id="entry-map-site">C–09</span></p>
+          <h1 id="entry-title">余波协议</h1>
+          <p class="entry-lead">
+            按住鼠标校准弹道，松开扣下扳机。三个人，三种火力答案。
+          </p>
+
+          <div class="identity-field">
+            <label for="player-name">战场代号</label>
+            <input
+              id="player-name"
+              name="player-name"
+              maxlength="12"
+              autocomplete="nickname"
+              value="游隼"
+            >
+          </div>
+
+          <div class="entry-actions">
+            <button id="practice-button" class="action-button action-button--primary" type="button">
+              进入练习
+            </button>
+            <button id="create-room-button" class="action-button" type="button">
+              建立房间
+            </button>
+          </div>
+
+          <div class="join-row">
+            <label for="room-code-input">房间码</label>
+            <input
+              id="room-code-input"
+              name="room-code"
+              inputmode="text"
+              maxlength="6"
+              placeholder="6 位"
+              autocomplete="off"
+            >
+            <button id="join-room-button" class="action-button action-button--quiet" type="button">
+              加入
+            </button>
+          </div>
+
+          <div class="map-select">
+            <span class="map-select__label">战场</span>
+            <div id="entry-map-picker" class="map-picker" aria-label="选择练习地图"></div>
+          </div>
+
+          <div class="weapon-brief" aria-label="武器说明">
+            <article class="weapon-brief__row" data-preview-weapon="pistol">
+              <span class="weapon-slot">01</span>
+              <div>
+                <strong>P–12 手枪</strong>
+                <p>快、直接。松开即射，拿来抢最后一枪。</p>
+              </div>
+              <span class="weapon-rule">26 DMG</span>
+            </article>
+            <article class="weapon-brief__row" data-preview-weapon="sniper">
+              <span class="weapon-slot">02</span>
+              <div>
+                <strong>K–77 狙击枪</strong>
+                <p>开始散得厉害。按住 1.35 秒后只剩一条线。</p>
+              </div>
+              <span class="weapon-rule">58–92 DMG · 18 STA</span>
+            </article>
+            <article class="weapon-brief__row" data-preview-weapon="mg">
+              <span class="weapon-slot">03</span>
+              <div>
+                <strong>M–48 机枪</strong>
+                <p>连射会积累散布，停火后缓慢恢复；手持移速 -25%。</p>
+              </div>
+              <span class="weapon-rule">48 RDS · 2 STA · MOVE -25%</span>
+            </article>
+          </div>
+
+          <div class="control-strip" aria-label="操作说明">
+            <span><kbd>W A S D</kbd> 移动</span>
+            <span><kbd>按住左键</kbd> 观察扇面</span>
+            <span><kbd>CTRL</kbd> 疾跑</span>
+            <span><kbd>SPACE</kbd> 滑铲</span>
+            <span><kbd>ESC</kbd> 菜单</span>
+            <span><kbd>1 2 3</kbd> 换枪</span>
+            <span><kbd>R</kbd> 换弹</span>
+          </div>
+
+          <p id="entry-message" class="entry-message" role="status" aria-live="polite"></p>
+        </section>
+
+        <section id="lobby-panel" class="lobby-panel is-hidden" aria-labelledby="lobby-title">
+          <div class="lobby-heading">
+            <div>
+              <p class="eyebrow">PRIVATE LOBBY</p>
+              <h2 id="lobby-title">房间已开放</h2>
+            </div>
+            <button id="copy-room-button" class="copy-room-button" type="button">
+              <span id="lobby-room-code">------</span>
+              <small>点击复制</small>
+            </button>
+          </div>
+          <div id="lobby-slots" class="lobby-slots" aria-label="房间成员"></div>
+          <div class="map-select map-select--lobby">
+            <span class="map-select__label">战场</span>
+            <div id="lobby-map-picker" class="map-picker" aria-label="选择对局地图"></div>
+          </div>
+          <div class="lobby-actions">
+            <button id="start-match-button" class="action-button action-button--primary" type="button">
+              开始对局
+            </button>
+            <button id="leave-room-button" class="action-button action-button--quiet" type="button">
+              退出
+            </button>
+          </div>
+          <p id="lobby-message" class="entry-message" role="status" aria-live="polite"></p>
+        </section>
+
+        <div id="round-banner" class="round-banner" aria-live="assertive"></div>
+
+        <div id="respawn-panel" class="respawn-panel is-hidden" aria-live="polite">
+          <span>信号丢失</span>
+          <strong id="respawn-count">3.0</strong>
+          <p>调整武器后重新进入战场</p>
+        </div>
+
+        <section id="end-panel" class="end-panel is-hidden" aria-labelledby="end-title">
+          <p class="eyebrow">MATCH REPORT</p>
+          <h2 id="end-title">对局结束</h2>
+          <p id="end-summary">蓝队取得优势。</p>
+          <div class="end-actions">
+            <button id="restart-button" class="action-button action-button--primary" type="button">
+              再来一局
+            </button>
+            <button id="return-lobby-button" class="action-button action-button--quiet" type="button">
+              返回房间
+            </button>
+          </div>
+        </section>
+
+        <section id="pause-panel" class="pause-panel is-hidden" aria-labelledby="pause-title">
+          <p class="eyebrow">FIELD MENU</p>
+          <h2 id="pause-title">战术暂停</h2>
+          <p id="pause-message">对局已暂停。</p>
+          <div class="pause-actions">
+            <button id="resume-button" class="action-button action-button--primary" type="button">
+              返回战场
+            </button>
+            <button id="quit-match-button" class="action-button action-button--quiet" type="button">
+              退出对局
+            </button>
+            <button id="immersive-button" class="action-button action-button--quiet pause-immersive" type="button">
+              全屏防误触
+            </button>
+          </div>
+          <p class="pause-shortcuts">
+            <span><kbd>CTRL</kbd> 疾跑</span>
+            <span><kbd>SPACE</kbd> 滑铲</span>
+            <span><kbd>ESC</kbd> 继续</span>
+          </p>
+        </section>
+      </section>
+
+      <footer class="bottom-hud">
+        <section class="vitals-panel" aria-label="生命状态">
+          <div class="hud-label">
+            <span>生命体征</span>
+            <strong id="health-value">100</strong>
+          </div>
+          <div class="health-track" aria-hidden="true">
+            <span id="health-fill"></span>
+          </div>
+          <div class="stamina-row">
+            <span id="stamina-state">体力 / 滑铲就绪</span>
+            <strong id="stamina-value">100</strong>
+          </div>
+          <div class="stamina-track" aria-hidden="true">
+            <span id="stamina-fill"></span>
+          </div>
+          <p id="player-callsign">游隼 / 本地</p>
+        </section>
+
+        <section class="weapon-rack" aria-label="武器选择">
+          <button class="weapon-button is-active" data-weapon="pistol" type="button">
+            <span>01</span>
+            <strong>P–12</strong>
+            <small>手枪</small>
+          </button>
+          <button class="weapon-button" data-weapon="sniper" type="button">
+            <span>02</span>
+            <strong>K–77</strong>
+            <small>狙击枪</small>
+          </button>
+          <button class="weapon-button" data-weapon="mg" type="button">
+            <span>03</span>
+            <strong>M–48</strong>
+            <small>机枪</small>
+          </button>
+        </section>
+
+        <section class="fire-panel" aria-label="瞄准与弹药状态">
+          <div class="focus-readout">
+            <span id="focus-label">按住鼠标</span>
+            <strong id="spread-value">4.5°</strong>
+            <div class="focus-track" aria-hidden="true">
+              <span id="focus-fill"></span>
+            </div>
+          </div>
+          <div class="ammo-readout">
+            <strong id="ammo-value">12</strong>
+            <span>/</span>
+            <small id="ammo-max">12</small>
+            <p id="reload-label">READY</p>
+          </div>
+        </section>
+
+        <section class="score-panel" aria-label="比分">
+          <div class="score-panel__heading">
+            <span>击杀记录</span>
+            <strong id="score-progress">06 / 15</strong>
+          </div>
+          <ol id="scoreboard"></ol>
+        </section>
+      </footer>
+
+      <div id="rotate-note" class="rotate-note">
+        <strong>请使用横屏或桌面浏览器</strong>
+        <span>按住鼠标观察扇面，松开射击。</span>
+      </div>
+    </main>
+
+    <script src="./vendor/phaser.min.js"></script>
+    <script src="./vendor/peerjs.min.js"></script>
+    <script type="module" src="./src/game.js"></script>
+  </body>
+</html>

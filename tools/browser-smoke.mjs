@@ -1,0 +1,835 @@
+import { spawn } from 'node:child_process';
+import { mkdtemp, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+
+const edgePath =
+  process.env.EDGE_PATH ||
+  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
+const debugPort = Number(
+  process.env.DEBUG_PORT || 9600 + Math.floor(Math.random() * 200),
+);
+const baseUrl = process.env.BASE_URL || 'http://127.0.0.1:4173/submission/';
+const profile = await mkdtemp(path.join(os.tmpdir(), 'aftershot-smoke-'));
+
+const edge = spawn(
+  edgePath,
+  [
+    '--headless=new',
+    '--disable-gpu',
+    '--disable-quic',
+    '--disable-features=UseDnsHttpsSvcb',
+    '--no-sandbox',
+    '--hide-scrollbars',
+    '--force-device-scale-factor=1',
+    `--user-data-dir=${profile}`,
+    `--remote-debugging-port=${debugPort}`,
+    '--window-size=1440,900',
+    baseUrl,
+  ],
+  { stdio: 'ignore', windowsHide: true },
+);
+
+let browserSocket;
+let commandId = 0;
+const pending = new Map();
+const consoleErrors = [];
+
+async function waitForPage() {
+  const deadline = Date.now() + 12000;
+  while (Date.now() < deadline) {
+    try {
+      const pages = await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((response) =>
+        response.json(),
+      );
+      const page =
+        pages.find(
+          (entry) => entry.type === 'page' && entry.url.includes('/submission/'),
+        ) || pages.find((entry) => entry.type === 'page');
+      if (page) {
+        return page;
+      }
+    } catch {
+      // Edge is still starting.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 120));
+  }
+  throw new Error('Edge DevTools endpoint did not become ready.');
+}
+
+function send(method, params = {}) {
+  commandId += 1;
+  const id = commandId;
+  browserSocket.send(JSON.stringify({ id, method, params }));
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pending.delete(id);
+      reject(new Error(`CDP command timed out: ${method}`));
+    }, 15000);
+    pending.set(id, {
+      resolve: (result) => {
+        clearTimeout(timeout);
+        resolve(result);
+      },
+      reject: (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      },
+    });
+  });
+}
+
+async function evaluate(expression) {
+  const result = await send('Runtime.evaluate', {
+    expression,
+    awaitPromise: true,
+    returnByValue: true,
+    userGesture: true,
+  });
+  if (result.exceptionDetails) {
+    throw new Error(
+      result.exceptionDetails.exception?.description ||
+        result.exceptionDetails.text ||
+        'Evaluation failed.',
+    );
+  }
+  return result.result?.value;
+}
+
+async function waitFor(expression, timeout = 8000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (await evaluate(expression)) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Timed out waiting for: ${expression}`);
+}
+
+async function clickSelector(selector) {
+  const point = await evaluate(`(() => {
+    const element = document.querySelector(${JSON.stringify(selector)});
+    if (!element) return null;
+    const rect = element.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  })()`);
+  if (!point) {
+    throw new Error(`Selector not found: ${selector}`);
+  }
+  await send('Input.dispatchMouseEvent', {
+    type: 'mousePressed',
+    x: point.x,
+    y: point.y,
+    button: 'left',
+    clickCount: 1,
+  });
+  await send('Input.dispatchMouseEvent', {
+    type: 'mouseReleased',
+    x: point.x,
+    y: point.y,
+    button: 'left',
+    clickCount: 1,
+  });
+}
+
+async function pressKey(key, code, keyCode) {
+  await send('Input.dispatchKeyEvent', {
+    type: 'keyDown',
+    key,
+    code,
+    windowsVirtualKeyCode: keyCode,
+    nativeVirtualKeyCode: keyCode,
+  });
+  await send('Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key,
+    code,
+    windowsVirtualKeyCode: keyCode,
+    nativeVirtualKeyCode: keyCode,
+  });
+}
+
+async function holdCanvasAt(x, y, durationMs, screenshotPath) {
+  await send('Input.dispatchMouseEvent', {
+    type: 'mouseMoved',
+    x,
+    y,
+    button: 'none',
+  });
+  await send('Input.dispatchMouseEvent', {
+    type: 'mousePressed',
+    x,
+    y,
+    button: 'left',
+    clickCount: 1,
+  });
+  await new Promise((resolve) => setTimeout(resolve, durationMs));
+  if (screenshotPath) {
+    const screenshot = await send('Page.captureScreenshot', {
+      format: 'png',
+      captureBeyondViewport: false,
+    });
+    await writeFile(screenshotPath, Buffer.from(screenshot.data, 'base64'));
+  }
+  await send('Input.dispatchMouseEvent', {
+    type: 'mouseReleased',
+    x,
+    y,
+    button: 'left',
+    clickCount: 1,
+  });
+}
+
+async function captureScreenshot(filePath) {
+  const screenshot = await send('Page.captureScreenshot', {
+    format: 'png',
+    captureBeyondViewport: false,
+  });
+  await writeFile(filePath, Buffer.from(screenshot.data, 'base64'));
+}
+
+async function main() {
+  const page = await waitForPage();
+  browserSocket = new WebSocket(page.webSocketDebuggerUrl);
+  await new Promise((resolve, reject) => {
+    browserSocket.addEventListener('open', resolve, { once: true });
+    browserSocket.addEventListener('error', reject, { once: true });
+  });
+  browserSocket.addEventListener('message', (event) => {
+    const message = JSON.parse(event.data);
+    if (message.id && pending.has(message.id)) {
+      const command = pending.get(message.id);
+      pending.delete(message.id);
+      if (message.error) {
+        command.reject(new Error(message.error.message));
+      } else {
+        command.resolve(message.result);
+      }
+      return;
+    }
+    if (message.method === 'Runtime.exceptionThrown') {
+      consoleErrors.push(
+        message.params.exceptionDetails.exception?.description ||
+          message.params.exceptionDetails.text,
+      );
+    }
+    if (
+      message.method === 'Log.entryAdded' &&
+      message.params.entry.level === 'error'
+    ) {
+      consoleErrors.push(message.params.entry.text);
+    }
+  });
+
+  await send('Page.enable');
+  await send('Runtime.enable');
+  await send('Log.enable');
+  if (process.env.CAPTURE_SCALE === '2') {
+    await send('Emulation.setDeviceMetricsOverride', {
+      width: 1440,
+      height: 900,
+      deviceScaleFactor: 2,
+      mobile: false,
+    });
+  }
+  await send('Page.navigate', { url: baseUrl });
+  await waitFor(`document.readyState === 'complete'`, 30000);
+  await waitFor('Boolean(window.__AFTERSHOT__?.app?.scene)', 30000);
+  await new Promise((resolve) => setTimeout(resolve, 800));
+
+  const initial = await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    return {
+      view: app.view,
+      playerCount: app.gameState.players.length,
+      canvas: Boolean(document.querySelector('#game-canvas canvas')),
+      title: document.querySelector('#entry-title')?.textContent,
+    };
+  })()`);
+  if (!initial.canvas || initial.view !== 'entry' || initial.playerCount !== 3) {
+    throw new Error(`Initial state invalid: ${JSON.stringify(initial)}`);
+  }
+  await captureScreenshot(path.join('proof', 'final-entry.png'));
+  if (process.env.CAPTURE_SCALE === '2') {
+    await captureScreenshot(
+      path.join('proof', process.env.CAPTURE_NAME || 'live-final-2x.png'),
+    );
+  }
+  const mapStates = [];
+  for (const mapId of ['foundry', 'harbor', 'dunes']) {
+    await clickSelector(`#entry-map-picker [data-map="${mapId}"]`);
+    await new Promise((resolve) => setTimeout(resolve, 220));
+    const state = await evaluate(`(() => ({
+      selectedMapId: window.__AFTERSHOT__.app.selectedMapId,
+      sceneMapId: window.__AFTERSHOT__.app.scene.currentMapId,
+      stamp: document.querySelector('#map-stamp-name').textContent,
+    }))()`);
+    if (state.selectedMapId !== mapId || state.sceneMapId !== mapId) {
+      throw new Error(`Map switch failed: ${JSON.stringify({ mapId, state })}`);
+    }
+    mapStates.push(state);
+    await captureScreenshot(path.join('proof', `map-${mapId}.png`));
+  }
+  await clickSelector('#entry-map-picker [data-map="foundry"]');
+  await waitFor(
+    `window.__AFTERSHOT__.app.selectedMapId === 'foundry' && window.__AFTERSHOT__.app.scene.currentMapId === 'foundry'`,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 160));
+  await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const fourth = structuredClone(app.gameState.players[1]);
+    fourth.id = 'layout-check-4';
+    fourth.name = '访客-余烬';
+    fourth.slot = 3;
+    app.gameState.players.push(fourth);
+  })()`);
+  await waitFor(`document.querySelectorAll('#scoreboard li').length === 4`, 2000);
+  const fourRowLayout = await evaluate(`(() => {
+    const rows = [...document.querySelectorAll('#scoreboard li')];
+    const lastRect = rows.at(-1)?.getBoundingClientRect();
+    return {
+      rows: rows.length,
+      lastBottom: lastRect?.bottom ?? 0,
+      viewportHeight: innerHeight,
+    };
+  })()`);
+  if (
+    fourRowLayout.rows !== 4 ||
+    fourRowLayout.lastBottom > fourRowLayout.viewportHeight
+  ) {
+    throw new Error(`Four-player HUD overflow: ${JSON.stringify(fourRowLayout)}`);
+  }
+
+  await clickSelector('#practice-button');
+  await waitFor(`window.__AFTERSHOT__.app.view === 'game'`);
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  const immersiveState = await evaluate(`(() => ({
+    fullscreen: Boolean(document.fullscreenElement),
+    keyboardLocked: window.__AFTERSHOT__.app.keyboardLocked,
+    keyboardLockApi: Boolean(navigator.keyboard?.lock),
+  }))()`);
+  await send('Input.dispatchKeyEvent', {
+    type: 'keyDown',
+    key: 'Control',
+    code: 'ControlLeft',
+    windowsVirtualKeyCode: 17,
+    nativeVirtualKeyCode: 17,
+    modifiers: 2,
+  });
+  await send('Input.dispatchKeyEvent', {
+    type: 'keyDown',
+    key: 'w',
+    code: 'KeyW',
+    windowsVirtualKeyCode: 87,
+    nativeVirtualKeyCode: 87,
+    modifiers: 2,
+  });
+  await send('Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key: 'w',
+    code: 'KeyW',
+    windowsVirtualKeyCode: 87,
+    nativeVirtualKeyCode: 87,
+    modifiers: 2,
+  });
+  await send('Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key: 'Control',
+    code: 'ControlLeft',
+    windowsVirtualKeyCode: 17,
+    nativeVirtualKeyCode: 17,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  const ctrlWBlocked = await evaluate(
+    `window.__AFTERSHOT__?.app?.view === 'game'`,
+  );
+  if (!ctrlWBlocked) {
+    throw new Error('Ctrl+W closed or navigated away from the game.');
+  }
+
+  const timeBeforePause = await evaluate(
+    `window.__AFTERSHOT__.app.gameState.timeLeft`,
+  );
+  await pressKey('Escape', 'Escape', 27);
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  const paused = await evaluate(`(() => ({
+    menuOpen: window.__AFTERSHOT__.app.menuOpen,
+    panelVisible: !document.querySelector('#pause-panel').classList.contains('is-hidden'),
+    timeLeft: window.__AFTERSHOT__.app.gameState.timeLeft,
+  }))()`);
+  if (
+    !paused.menuOpen ||
+    !paused.panelVisible ||
+    Math.abs(paused.timeLeft - timeBeforePause) > 0.15
+  ) {
+    throw new Error(`Escape pause failed: ${JSON.stringify({ timeBeforePause, paused })}`);
+  }
+
+  const blockedShortcut = await evaluate(`(() => {
+    const event = new KeyboardEvent('keydown', {
+      key: 'r',
+      code: 'KeyR',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    return !window.dispatchEvent(event);
+  })()`);
+  if (!blockedShortcut) {
+    throw new Error('Ctrl+R was not intercepted during gameplay.');
+  }
+
+  await pressKey('Escape', 'Escape', 27);
+  await new Promise((resolve) => setTimeout(resolve, 320));
+  const resumed = await evaluate(`(() => ({
+    menuOpen: window.__AFTERSHOT__.app.menuOpen,
+    timeLeft: window.__AFTERSHOT__.app.gameState.timeLeft,
+  }))()`);
+  if (resumed.menuOpen || resumed.timeLeft >= paused.timeLeft) {
+    throw new Error(`Escape resume failed: ${JSON.stringify(resumed)}`);
+  }
+
+  const beforeMove = await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    return { x: local.x, y: local.y };
+  })()`);
+  await send('Input.dispatchKeyEvent', {
+    type: 'keyDown',
+    key: 'w',
+    code: 'KeyW',
+    windowsVirtualKeyCode: 87,
+    nativeVirtualKeyCode: 87,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 320));
+  await send('Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key: 'w',
+    code: 'KeyW',
+    windowsVirtualKeyCode: 87,
+    nativeVirtualKeyCode: 87,
+  });
+  const afterMove = await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    return { x: local.x, y: local.y };
+  })()`);
+  if (Math.hypot(afterMove.x - beforeMove.x, afterMove.y - beforeMove.y) < 8) {
+    throw new Error('WASD movement did not change the local player position.');
+  }
+
+  await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    for (const player of app.gameState.players) {
+      if (player.isBot) {
+        player.alive = false;
+        player.health = 0;
+        player.respawnAt = performance.now() + 60000;
+      }
+    }
+  })()`);
+  await send('Input.dispatchKeyEvent', {
+    type: 'keyDown',
+    key: 's',
+    code: 'KeyS',
+    windowsVirtualKeyCode: 83,
+    nativeVirtualKeyCode: 83,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 7000));
+  await send('Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key: 's',
+    code: 'KeyS',
+    windowsVirtualKeyCode: 83,
+    nativeVirtualKeyCode: 83,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  const bottomEdge = await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    return { x: local.x, y: local.y };
+  })()`);
+  if (bottomEdge.y < 815) {
+    throw new Error(`Player cannot reach the lower boundary: ${JSON.stringify(bottomEdge)}`);
+  }
+
+  await holdCanvasAt(1080, 520, 100, null);
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  const pistolAmmo = await evaluate(
+    `window.__AFTERSHOT__.app.gameState.players.find((player) => player.id === window.__AFTERSHOT__.app.localPlayerId).ammo.pistol`,
+  );
+  if (pistolAmmo >= 12) {
+    throw new Error('Pistol did not fire on release.');
+  }
+
+  await pressKey('2', 'Digit2', 50);
+  await send('Input.dispatchMouseEvent', {
+    type: 'mouseMoved',
+    x: 1080,
+    y: 520,
+    button: 'none',
+  });
+  await send('Input.dispatchMouseEvent', {
+    type: 'mousePressed',
+    x: 1080,
+    y: 520,
+    button: 'left',
+    clickCount: 1,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  const earlySniperSpread = await evaluate(
+    `parseFloat(document.querySelector('#spread-value').textContent)`,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 1250));
+  const lateSniperSpread = await evaluate(
+    `parseFloat(document.querySelector('#spread-value').textContent)`,
+  );
+  await captureScreenshot(path.join('proof', 'sniper-aim.png'));
+  await send('Input.dispatchMouseEvent', {
+    type: 'mouseReleased',
+    x: 1080,
+    y: 520,
+    button: 'left',
+    clickCount: 1,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 180));
+
+  const sniper = await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    return {
+      weapon: local.weapon,
+      ammo: local.ammo.sniper,
+      pointerDown: local.pointerDown,
+      shotEvents: app.gameState.events.filter((event) => event.type === 'shot').length,
+    };
+  })()`);
+  if (sniper.weapon !== 'sniper' || sniper.ammo >= 5 || sniper.pointerDown) {
+    throw new Error(`Sniper hold/release failed: ${JSON.stringify(sniper)}`);
+  }
+  if (!(earlySniperSpread > 8 && lateSniperSpread < 2)) {
+    throw new Error(
+      `Sniper bloom did not tighten: ${earlySniperSpread} -> ${lateSniperSpread}`,
+    );
+  }
+
+  await pressKey('3', 'Digit3', 51);
+  await send('Input.dispatchMouseEvent', {
+    type: 'mouseMoved',
+    x: 1080,
+    y: 520,
+    button: 'none',
+  });
+  await send('Input.dispatchMouseEvent', {
+    type: 'mousePressed',
+    x: 1080,
+    y: 520,
+    button: 'left',
+    clickCount: 1,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 1800));
+  const mgDuringFire = await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    return {
+      bloom: local.mgBloom,
+      spread: parseFloat(document.querySelector('#spread-value').textContent),
+    };
+  })()`);
+  await captureScreenshot(path.join('proof', 'mg-suppression.png'));
+  await send('Input.dispatchMouseEvent', {
+    type: 'mouseReleased',
+    x: 1080,
+    y: 520,
+    button: 'left',
+    clickCount: 1,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  const mg = await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    return {
+      weapon: local.weapon,
+      ammo: local.ammo.mg,
+      bloom: local.mgBloom,
+      pointerDown: local.pointerDown,
+      shotEvents: app.gameState.events.filter((event) => event.type === 'shot').length,
+    };
+  })()`);
+  if (mg.weapon !== 'mg' || mg.ammo > 45 || mg.pointerDown) {
+    throw new Error(`MG automatic fire failed: ${JSON.stringify(mg)}`);
+  }
+  if (!(mgDuringFire.bloom > 8 && mgDuringFire.spread > 10)) {
+    throw new Error(`MG spread did not increase: ${JSON.stringify(mgDuringFire)}`);
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, 3200));
+  const mgRecovered = await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    return { bloom: local.mgBloom };
+  })()`);
+  if (mgRecovered.bloom >= mg.bloom - 2) {
+    throw new Error(
+      `MG bloom did not recover: ${JSON.stringify({ mgDuringFire, mgRecovered })}`,
+    );
+  }
+
+  await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    local.x = 700;
+    local.y = 650;
+  })()`);
+  await pressKey('1', 'Digit1', 49);
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  await send('Input.dispatchKeyEvent', {
+    type: 'keyDown',
+    key: 'd',
+    code: 'KeyD',
+    windowsVirtualKeyCode: 68,
+    nativeVirtualKeyCode: 68,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  await send('Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key: 'd',
+    code: 'KeyD',
+    windowsVirtualKeyCode: 68,
+    nativeVirtualKeyCode: 68,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  const pistolDistance = await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    return local.x - 700;
+  })()`);
+
+  await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    local.x = 700;
+    local.y = 650;
+  })()`);
+  await pressKey('3', 'Digit3', 51);
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  await send('Input.dispatchKeyEvent', {
+    type: 'keyDown',
+    key: 'd',
+    code: 'KeyD',
+    windowsVirtualKeyCode: 68,
+    nativeVirtualKeyCode: 68,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  await send('Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key: 'd',
+    code: 'KeyD',
+    windowsVirtualKeyCode: 68,
+    nativeVirtualKeyCode: 68,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  const mgDistance = await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    return local.x - 700;
+  })()`);
+  const speedRatio = mgDistance / pistolDistance;
+  if (!(speedRatio >= 0.64 && speedRatio <= 0.82)) {
+    throw new Error(
+      `MG movement penalty invalid: ${JSON.stringify({ pistolDistance, mgDistance, speedRatio })}`,
+    );
+  }
+
+  await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    local.x = 700;
+    local.y = 650;
+    local.stamina = 100;
+    local.slideCooldownEnd = 0;
+  })()`);
+  await send('Input.dispatchKeyEvent', {
+    type: 'keyDown',
+    key: 'd',
+    code: 'KeyD',
+    windowsVirtualKeyCode: 68,
+    nativeVirtualKeyCode: 68,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await send('Input.dispatchKeyEvent', {
+    type: 'keyDown',
+    key: ' ',
+    code: 'Space',
+    windowsVirtualKeyCode: 32,
+    nativeVirtualKeyCode: 32,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 90));
+  const slideKeyDuring = await evaluate(`(() => ({
+    keyExists: Boolean(window.__AFTERSHOT__.app.scene?.keys?.slide),
+    isDown: Boolean(window.__AFTERSHOT__.app.scene?.keys?.slide?.isDown),
+    latch: window.__AFTERSHOT__.app.slideLatchUntil,
+    activeElement: document.activeElement?.tagName,
+  }))()`);
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  await send('Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key: ' ',
+    code: 'Space',
+    windowsVirtualKeyCode: 32,
+    nativeVirtualKeyCode: 32,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 420));
+  await send('Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key: 'd',
+    code: 'KeyD',
+    windowsVirtualKeyCode: 68,
+    nativeVirtualKeyCode: 68,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  const slideState = await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    return {
+      stamina: local.stamina,
+      slideCooldownRemaining: Math.max(0, local.slideCooldownEnd - performance.now()),
+      staminaLabel: document.querySelector('#stamina-state').textContent,
+    };
+  })()`);
+  if (
+    slideState.stamina > 75 ||
+    slideState.slideCooldownRemaining <= 0 ||
+    slideState.staminaLabel.length === 0
+  ) {
+    throw new Error(
+      `Slide behavior invalid: ${JSON.stringify({ slideKeyDuring, slideState })}`,
+    );
+  }
+
+  await pressKey('r', 'KeyR', 82);
+  await waitFor(
+    `(() => {
+      const app = window.__AFTERSHOT__.app;
+      const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+      return local.reloadEnd > 0;
+    })()`,
+    2000,
+  );
+
+  const ui = await evaluate(`(() => ({
+    health: document.querySelector('#health-value')?.textContent,
+    ammo: document.querySelector('#ammo-value')?.textContent,
+    stamina: document.querySelector('#stamina-value')?.textContent,
+    staminaState: document.querySelector('#stamina-state')?.textContent,
+    activeWeapon: document.querySelector('.weapon-button.is-active')?.dataset.weapon,
+    scoreboardRows: document.querySelectorAll('#scoreboard li').length,
+    respawnHidden: document.querySelector('#respawn-panel')?.classList.contains('is-hidden'),
+  }))()`);
+  if (
+    ui.activeWeapon !== 'mg' ||
+    ui.scoreboardRows !== 2 ||
+    ui.respawnHidden !== true ||
+    Number(ui.stamina) > 100
+  ) {
+    throw new Error(`HUD state invalid: ${JSON.stringify(ui)}`);
+  }
+
+  await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    local.x = 560;
+    local.y = 500;
+    local.angle = 0;
+    local.pointerDown = false;
+    local.stamina = 100;
+  })()`);
+  await pressKey('2', 'Digit2', 50);
+  const targetPoint = await evaluate(`(() => {
+    const rect = document.querySelector('#game-canvas canvas').getBoundingClientRect();
+    return {
+      x: rect.left + rect.width * 0.78,
+      y: rect.top + rect.height * 0.5,
+    };
+  })()`);
+  await send('Input.dispatchMouseEvent', {
+    type: 'mouseMoved',
+    x: targetPoint.x,
+    y: targetPoint.y,
+    button: 'none',
+  });
+  await send('Input.dispatchMouseEvent', {
+    type: 'mousePressed',
+    x: targetPoint.x,
+    y: targetPoint.y,
+    button: 'left',
+    clickCount: 1,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 1250));
+  await captureScreenshot(path.join('proof', 'visibility-occlusion.png'));
+  await send('Input.dispatchMouseEvent', {
+    type: 'mouseReleased',
+    x: targetPoint.x,
+    y: targetPoint.y,
+    button: 'left',
+    clickCount: 1,
+  });
+
+  if (consoleErrors.length) {
+    throw new Error(`Browser errors: ${consoleErrors.join(' | ')}`);
+  }
+
+  const results = {
+    initial,
+    fourRowLayout,
+        mapStates,
+        immersiveState,
+        ctrlWBlocked,
+        pauseState: { timeBeforePause, paused, resumed, blockedShortcut },
+    movement: { before: beforeMove, after: afterMove },
+        bottomEdge,
+    pistolAmmo,
+    sniperSpread: { early: earlySniperSpread, late: lateSniperSpread },
+    sniper,
+    mg,
+        mgDuringFire,
+        mgRecovered,
+        movementPenalty: { pistolDistance, mgDistance, speedRatio },
+        slideState,
+        slideKeyDuring,
+        visibilityScreenshot: 'proof/visibility-occlusion.png',
+    ui,
+    consoleErrors,
+  };
+  await writeFile(
+    path.join('proof', 'browser-smoke-results.json'),
+    `${JSON.stringify(results, null, 2)}\n`,
+  );
+  console.log(JSON.stringify(results, null, 2));
+}
+
+try {
+  await main();
+} catch (error) {
+  try {
+    const diagnostics = await evaluate(`(() => ({
+      url: location.href,
+      readyState: document.readyState,
+      hasAftershot: Boolean(window.__AFTERSHOT__),
+      bodyText: document.body?.innerText?.slice(0, 300),
+      scripts: [...document.scripts].map((script) => script.src),
+    }))()`);
+    console.error(JSON.stringify({ diagnostics, consoleErrors }, null, 2));
+  } catch {
+    // Preserve the original failure.
+  }
+  throw error;
+} finally {
+  try {
+    browserSocket?.close();
+  } catch {
+    // Browser already closed.
+  }
+  edge.kill();
+}

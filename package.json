@@ -1,0 +1,11 @@
+{
+  "name": "yuboxieyi",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node tools/serve.mjs",
+    "check": "node --check submission/src/sim.js && node --check submission/src/network.js && node --check submission/src/game.js",
+    "test": "node tools/sim-mechanics-test.mjs && node tools/vision-test.mjs"
+  }
+}

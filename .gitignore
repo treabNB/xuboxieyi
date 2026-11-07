@@ -1,0 +1,5 @@
+.netlify/
+.probe/
+deploy.local.env
+node_modules/
+
