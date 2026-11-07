@@ -171,7 +171,7 @@ manifestations:
 - `tools/multiplayer-smoke.mjs` 通过真实 PeerJS 四客户端房间：4 人入房、房主开始、访客移动同步、射击同步、比分达到四行、对局结束和返回房间。
 - 2× 像素检查：线上 `https://yuboxieyi.netlify.app/` 的 `proof/live-final-2x.png` 尺寸为 2880×1800，矢量 UI、Canvas 目标和字体均保持清晰。
 - 线上浏览器控制台：单机与双端联机复测均为 0 error；四端联机使用同一已部署构建在本机验证。
-- Netlify 最近成功部署 `6aeddb2c903caaabc04fd3da` 为三地图与角色美术版本；视野遮挡版本已通过本地完整回归，但发布尝试 `6aeeb1215a3f2d295bfc481f` 被 Netlify 以 “account credit usage exceeded” 跳过，生产域名尚未更新这一版。当前可部署包为 `release/yuboxieyi-netlify.zip`。
+- GitHub Pages 工作流 `42345230141` 已成功发布当前版本到 `treabNB/xuboxieyi`，Pages 自定义域名已设置为 `xuboxieyi.cc.cd`。DNSHE 中仍待添加 `CNAME xuboxieyi.cc.cd -> treabnb.github.io`，因此自定义域名尚未完成解析与 HTTPS 签发。
 
 ## Known Limits
 
