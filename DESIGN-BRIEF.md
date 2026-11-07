@@ -136,7 +136,7 @@ manifestations:
 
 | Location | Route | Decision and provenance |
 | --- | --- | --- |
-| 战场背景、掩体、靶道线 | `exact_graphic` | Phaser Graphics 按世界坐标实时绘制；必须随碰撞和缩圈变化，不能烘焙成图。 |
+| 战场背景、掩体、靶道线 | `exact_graphic` | Phaser Graphics 按地图与碰撞数据绘制一次并生成静态纹理；几何始终来自真实地图定义，切换地图时按需重建。 |
 | 三张地图装饰 | `exact_graphic` | 管线、积水、货柜肋条、沙丘与中继盘均由地图坐标和碰撞数据驱动，同一几何同时承担视觉识别与空间判断。 |
 | 视野遮罩 | `exact_graphic` | 由玩家朝向、障碍矩形和世界边界实时计算；不使用静态暗角图，保证每张地图和每个朝向都准确。 |
 | 玩家、准星、攻击扇面、弹道 | `exact_graphic` | 由玩家状态、鼠标方向和武器参数驱动；静态图无法准确反映连续输入。 |
@@ -170,6 +170,7 @@ manifestations:
 - `tools/sim-mechanics-test.mjs` 通过：三档 AI 瞄准误差按简单 > 普通 > 困难下降，困难 AI 会启用冲刺；疾跑 1.45 倍、滑铲扣除 30 体力并进入 2.5 秒冷却、狙击每发扣 18、机枪每发扣 2，以及机枪每 0.1 秒 +1° 散布。
 - `tools/vision-test.mjs` 通过：射线在掩体前 100px 截止、地图边界在 154px 截止，116° 视锥生成 66 点遮挡多边形。
 - `tools/browser-smoke.mjs` 通过：三张地图即时切换且场景 ID 与站点标签同步；视野与攻击扇面在炉芯前截断；全屏 Keyboard Lock 开启后真实 `Ctrl+W` 未关闭页面、Esc 暂停/恢复且练习计时冻结、页面级 `Ctrl+R` 被拦截、角色可移动至下边界 `y=822`、滑铲 HUD 冷却、手枪松开射击、狙击收束、机枪连射散布上升并缓慢恢复、机枪手持移速降低 25%、R 换弹、HUD 状态和四行记分可见。
+- 战斗入场性能：优化前 3 秒样本的 p95 帧间隔为 166.6ms、最长帧 183.4ms；静态地图纹理化、Canvas 渲染和视野遮罩节流后为 p95 66.7ms、最长帧 66.8ms，长任务最长 66ms。`tools/browser-smoke.mjs` 现会阻止 p95 > 90ms、最长帧 > 150ms 或长任务 > 100ms 的性能回退。
 - `tools/multiplayer-smoke.mjs` 通过：房主选择雨港后房间同步该地图，双方以相同 `mapId` 开局并正常完成移动、射击与结束回房。
 - `tools/multiplayer-smoke.mjs` 通过真实 PeerJS 四客户端房间：4 人入房、房主开始、访客移动同步、射击同步、比分达到四行、对局结束和返回房间。
 - 2× 像素检查：线上 `https://yuboxieyi.netlify.app/` 的 `proof/live-final-2x.png` 尺寸为 2880×1800，矢量 UI、Canvas 目标和字体均保持清晰。

@@ -115,6 +115,7 @@ const app = {
   seenEvents: new Set(),
   latestVisualPlayers: [],
   latestLocalPlayer: null,
+  scoreboardSignature: '',
   toastTimer: null,
 };
 
@@ -153,7 +154,9 @@ function setNetworkStatus(label, state = 'online') {
 function resetVisualState() {
   app.seenEvents.clear();
   app.endedShown = false;
+  app.scoreboardSignature = '';
   dom.feed.replaceChildren();
+  dom.scoreboard.replaceChildren();
   dom.endPanel.classList.add('is-hidden');
   dom.respawn.classList.add('is-hidden');
   app.menuOpen = false;
@@ -383,7 +386,10 @@ function playerName() {
   return dom.playerName.value.trim() || '无名者';
 }
 
-function beginLocalPractice() {
+async function beginLocalPractice() {
+  if (!navigator.webdriver && !document.fullscreenElement) {
+    await enterImmersiveMode();
+  }
   app.mode = 'practice';
   app.localPlayerId = 'local';
   app.selectedWeapon = 'pistol';
@@ -402,12 +408,12 @@ function beginLocalPractice() {
     DIFFICULTIES[app.selectedDifficulty]?.label ?? '普通'
   }`;
   showBanner('校准开始');
-  if (!navigator.webdriver) {
-    void enterImmersiveMode();
-  }
 }
 
-function beginHostMatch() {
+async function beginHostMatch() {
+  if (!navigator.webdriver && !document.fullscreenElement) {
+    await enterImmersiveMode();
+  }
   const roster = app.net.getRoster();
   app.mode = 'host';
   app.localPlayerId = app.net.localPlayerId;
@@ -426,9 +432,6 @@ function beginHostMatch() {
   setNetworkStatus(`${roster.length} 人在线`, 'online');
   dom.roomLabel.textContent = `房间 ${app.net.roomCode}`;
   showBanner('频道锁定');
-  if (!navigator.webdriver) {
-    void enterImmersiveMode();
-  }
 }
 
 function beginClientMatch(roster, playerId, mapId = app.selectedMapId) {
@@ -665,6 +668,35 @@ function requestReload() {
   app.reloadRequested = true;
 }
 
+function updateScoreboard(ranking, local) {
+  const signature = ranking
+    .map(
+      (player) =>
+        `${player.id}:${player.name}:${player.score ?? 0}:${player.kills ?? 0}:${player.deaths ?? 0}:${player.alive}`,
+    )
+    .join('|');
+  if (signature === app.scoreboardSignature) {
+    return;
+  }
+  app.scoreboardSignature = signature;
+  dom.scoreboard.replaceChildren();
+  ranking.forEach((player, index) => {
+    const row = document.createElement('li');
+    row.classList.toggle('is-dead', !player.alive);
+    const place = document.createElement('span');
+    place.textContent = String(index + 1).padStart(2, '0');
+    const name = document.createElement('span');
+    name.textContent = player.name;
+    const score = document.createElement('strong');
+    score.textContent = String(player.score ?? 0).padStart(2, '0');
+    if (player.id !== local.id) {
+      score.style.color = 'var(--red)';
+    }
+    row.append(place, name, score);
+    dom.scoreboard.append(row);
+  });
+}
+
 function updateHud(players, now) {
   const local =
     players.find((player) => player.id === app.localPlayerId) ?? players[0] ?? null;
@@ -781,22 +813,7 @@ function updateHud(players, now) {
   }
   syncWeaponButtons(local.weapon);
 
-  dom.scoreboard.replaceChildren();
-  ranking.forEach((player, index) => {
-    const row = document.createElement('li');
-    row.classList.toggle('is-dead', !player.alive);
-    const place = document.createElement('span');
-    place.textContent = String(index + 1).padStart(2, '0');
-    const name = document.createElement('span');
-    name.textContent = player.name;
-    const score = document.createElement('strong');
-    score.textContent = String(player.score ?? 0).padStart(2, '0');
-    if (player.id !== local.id) {
-      score.style.color = 'var(--red)';
-    }
-    row.append(place, name, score);
-    dom.scoreboard.append(row);
-  });
+  updateScoreboard(ranking, local);
 
   const showRespawn = !local.alive && state?.status !== 'ended';
   dom.respawn.classList.toggle('is-hidden', !showRespawn);
@@ -1202,14 +1219,28 @@ class ArenaScene extends Phaser.Scene {
     this.currentMapId = map.id;
     this.cameras.main.setBackgroundColor(map.palette.background);
 
-    const graphics = this.add.graphics().setDepth(0);
-    this.staticObjects.push(graphics);
-    this.drawArenaBase(graphics, map);
-    for (const decoration of map.decorations) {
-      this.drawMapDecoration(graphics, map, decoration);
+    const textureKey = `arena-${map.id}`;
+    if (!this.textures.exists(textureKey)) {
+      const graphics = this.make.graphics({ x: 0, y: 0, add: false });
+      this.drawArenaBase(graphics, map);
+      for (const decoration of map.decorations) {
+        this.drawMapDecoration(graphics, map, decoration);
+      }
+      for (const obstacle of map.obstacles) {
+        this.drawMapObstacle(graphics, map, obstacle);
+      }
+      for (const spawn of map.spawns) {
+        graphics.lineStyle(1, map.palette.rule, 0.18);
+        graphics.strokeCircle(spawn.x, spawn.y, 38);
+        graphics.lineBetween(spawn.x - 50, spawn.y, spawn.x + 50, spawn.y);
+        graphics.lineBetween(spawn.x, spawn.y - 50, spawn.x, spawn.y + 50);
+      }
+      graphics.generateTexture(textureKey, WORLD.width, WORLD.height);
+      graphics.destroy();
     }
+    const arena = this.add.image(0, 0, textureKey).setOrigin(0).setDepth(0);
+    this.staticObjects.push(arena);
     for (const obstacle of map.obstacles) {
-      this.drawMapObstacle(graphics, map, obstacle);
       this.addStaticText(
         obstacle.x + 9,
         obstacle.y + 7,
@@ -1217,13 +1248,6 @@ class ArenaScene extends Phaser.Scene {
         '#d8d0b6',
         10,
       );
-    }
-
-    for (const spawn of map.spawns) {
-      graphics.lineStyle(1, map.palette.rule, 0.18);
-      graphics.strokeCircle(spawn.x, spawn.y, 38);
-      graphics.lineBetween(spawn.x - 50, spawn.y, spawn.x + 50, spawn.y);
-      graphics.lineBetween(spawn.x, spawn.y - 50, spawn.x, spawn.y + 50);
     }
 
     this.addStaticText(
@@ -1251,6 +1275,12 @@ class ArenaScene extends Phaser.Scene {
     )
       .setOrigin(0.5)
       .setAlpha(0.18);
+
+    this.visibilityPolygon = [];
+    this.lastFogAt = 0;
+    this.lastFogX = Number.NaN;
+    this.lastFogY = Number.NaN;
+    this.lastFogAngle = Number.NaN;
   }
 
   drawArenaBase(graphics, map) {
@@ -1630,7 +1660,7 @@ class ArenaScene extends Phaser.Scene {
     }
 
     this.drawReticle(players);
-    this.drawFog(players);
+    this.drawFog(players, now);
   }
 
   drawAimCone(graphics, player, now) {
@@ -1653,7 +1683,7 @@ class ArenaScene extends Phaser.Scene {
       bottom: WORLD.playBottom,
     };
     const points = [{ x: player.x, y: player.y }];
-    const segments = 28;
+    const segments = 20;
     for (let index = 0; index <= segments; index += 1) {
       const angle = player.angle - halfSpread + (aim.spread * index) / segments;
       const ray = traceRay(
@@ -1966,7 +1996,7 @@ class ArenaScene extends Phaser.Scene {
     graphics.lineBetween(x, y + radius - 3, x, y + radius + 7);
   }
 
-  drawFog(players) {
+  drawFog(players, now) {
     if (app.view !== 'game') {
       this.fog.setVisible(false);
       this.visibilityPolygon = [];
@@ -1977,6 +2007,26 @@ class ArenaScene extends Phaser.Scene {
     if (!local?.alive) {
       this.fog.setVisible(false);
       this.visibilityPolygon = [];
+      this.lastFogAt = 0;
+      return;
+    }
+
+    const moved = Math.hypot(
+      local.x - (this.lastFogX ?? Number.NaN),
+      local.y - (this.lastFogY ?? Number.NaN),
+    );
+    const turned = Math.abs(
+      Math.atan2(
+        Math.sin(local.angle - (this.lastFogAngle ?? Number.NaN)),
+        Math.cos(local.angle - (this.lastFogAngle ?? Number.NaN)),
+      ),
+    );
+    const needsRebuild =
+      !this.visibilityPolygon?.length ||
+      moved > 0.8 ||
+      turned > 0.004 ||
+      now - (this.lastFogAt ?? 0) >= 33;
+    if (!needsRebuild) {
       return;
     }
 
@@ -1993,12 +2043,17 @@ class ArenaScene extends Phaser.Scene {
       facing: local.angle,
       obstacles: map.obstacles,
       bounds,
+      rays: 64,
     });
 
     this.fogMaskGraphics.clear();
     this.fogMaskGraphics.fillStyle(0xffffff, 1);
     this.fogMaskGraphics.fillPoints(this.visibilityPolygon, true);
     this.fog.setVisible(true);
+    this.lastFogAt = now;
+    this.lastFogX = local.x;
+    this.lastFogY = local.y;
+    this.lastFogAngle = local.angle;
   }
 
   drawEffects(now) {
@@ -2158,6 +2213,25 @@ function wireUi() {
         return;
       }
 
+      const combatInputActive =
+        app.view === 'game' &&
+        !app.menuOpen &&
+        app.gameState?.status === 'playing';
+      if (combatInputActive && event.code === 'KeyR') {
+        event.preventDefault();
+        if (!event.repeat) {
+          requestReload();
+        }
+        return;
+      }
+      if (combatInputActive && event.code === 'Space') {
+        event.preventDefault();
+        if (!event.repeat) {
+          app.slideLatchUntil = performance.now() + 180;
+        }
+        return;
+      }
+
       const key = event.key.toLowerCase();
       const commandKey = event.ctrlKey || event.metaKey;
       const blocked =
@@ -2236,7 +2310,7 @@ updateHud(
 );
 
 new Phaser.Game({
-  type: Phaser.AUTO,
+  type: Phaser.CANVAS,
   parent: 'game-canvas',
   width: WORLD.width,
   height: WORLD.height,

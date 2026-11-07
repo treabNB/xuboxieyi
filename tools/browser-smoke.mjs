@@ -321,8 +321,131 @@ async function main() {
     throw new Error(`Four-player HUD overflow: ${JSON.stringify(fourRowLayout)}`);
   }
 
+  const performanceVariant = process.env.PERF_VARIANT || 'baseline';
+  if (process.env.PERF_AUTO_FULLSCREEN === '1') {
+    await evaluate(`(() => {
+      try {
+        Object.defineProperty(navigator, 'webdriver', {
+          value: false,
+          configurable: true,
+        });
+      } catch {
+        // Keep the automated browser default when the property is locked.
+      }
+    })()`);
+  }
+  if (process.env.PERF_PROFILE === '1') {
+    await send('Profiler.enable');
+    await send('Profiler.setSamplingInterval', { interval: 1000 });
+    await send('Profiler.start');
+  }
+  await evaluate(`(() => {
+    const scene = window.__AFTERSHOT__.app.scene;
+    const variant = ${JSON.stringify(performanceVariant)};
+    window.__PERF_VARIANT__ = variant;
+    if (variant.includes('no-fog')) {
+      scene.drawFog = () => {};
+    }
+    if (variant.includes('no-aim')) {
+      scene.drawAimCone = () => {};
+    }
+    if (variant.includes('no-effects')) {
+      scene.drawEffects = () => {};
+    }
+  })()`);
+  await evaluate(`(() => {
+    const frames = [];
+    const longTasks = [];
+    let previous = performance.now();
+    const startedAt = previous;
+    const observer = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        longTasks.push(entry.duration);
+      }
+    });
+    try {
+      observer.observe({ type: 'longtask' });
+    } catch {
+      // Long Task API is not available in every browser.
+    }
+    const sample = (now) => {
+      frames.push(now - previous);
+      previous = now;
+      if (now - startedAt < 3000) {
+        requestAnimationFrame(sample);
+      } else {
+        observer.disconnect();
+        const sorted = [...frames].sort((a, b) => a - b);
+        const percentile = (value) =>
+          sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * value))] ?? 0;
+        window.__BATTLE_PERF__ = {
+          frameCount: frames.length,
+          p50FrameMs: percentile(0.5),
+          p95FrameMs: percentile(0.95),
+          maxFrameMs: Math.max(0, ...frames),
+          over25ms: frames.filter((value) => value > 25).length,
+          over50ms: frames.filter((value) => value > 50).length,
+          longTaskCount: longTasks.length,
+          maxLongTaskMs: Math.max(0, ...longTasks),
+          renderer: window.__AFTERSHOT__.app.scene?.game?.renderer?.type,
+          canvasWidth: window.__AFTERSHOT__.app.scene?.game?.canvas?.width,
+          canvasHeight: window.__AFTERSHOT__.app.scene?.game?.canvas?.height,
+        };
+      }
+    };
+    requestAnimationFrame(sample);
+  })()`);
   await clickSelector('#practice-button');
   await waitFor(`window.__AFTERSHOT__.app.view === 'game'`);
+  await waitFor(`Boolean(window.__BATTLE_PERF__)`, 5000);
+  const battlePerformance = await evaluate(`window.__BATTLE_PERF__`);
+  if (process.env.PERF_ONLY === '1') {
+    let hottestFunctions = [];
+    if (process.env.PERF_PROFILE === '1') {
+      const { profile } = await send('Profiler.stop');
+      const samples = new Map();
+      for (const node of profile.nodes) {
+        samples.set(node.id, node);
+      }
+      const hitCounts = new Map();
+      for (const id of profile.samples || []) {
+        hitCounts.set(id, (hitCounts.get(id) || 0) + 1);
+      }
+      hottestFunctions = [...hitCounts.entries()]
+        .map(([id, hits]) => {
+          const node = samples.get(id);
+          return {
+            fn: node?.callFrame?.functionName || '(anonymous)',
+            url: node?.callFrame?.url || '',
+            line: node?.callFrame?.lineNumber || 0,
+            hits,
+          };
+        })
+        .sort((a, b) => b.hits - a.hits)
+        .slice(0, 20);
+    }
+    const performanceResult = {
+      variant: performanceVariant,
+      battlePerformance,
+      hottestFunctions,
+      consoleErrors,
+    };
+    await writeFile(
+      path.join('proof', 'performance-smoke-results.json'),
+      `${JSON.stringify(performanceResult, null, 2)}\n`,
+    );
+    console.log(JSON.stringify(performanceResult, null, 2));
+    return;
+  }
+  if (
+    battlePerformance.p95FrameMs > 90 ||
+    battlePerformance.maxFrameMs > 150 ||
+    battlePerformance.maxLongTaskMs > 100
+  ) {
+    throw new Error(
+      `Battle entry performance regressed: ${JSON.stringify(battlePerformance)}`,
+    );
+  }
   await new Promise((resolve) => setTimeout(resolve, 350));
   const practiceDifficulty = await evaluate(`(() => {
     const app = window.__AFTERSHOT__.app;
@@ -905,6 +1028,7 @@ async function main() {
     fourRowLayout,
         difficultyStates,
         practiceDifficulty,
+    battlePerformance,
         mapStates,
         immersiveState,
         ctrlWBlocked,
