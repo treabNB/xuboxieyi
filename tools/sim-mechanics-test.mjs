@@ -3,7 +3,10 @@ import {
   MG_MAX_BLOOM,
   STAMINA,
   WEAPONS,
+  createPracticeSimulation,
   createSimulation,
+  DIFFICULTIES,
+  normalizeAngle,
   setInput,
   updateSimulation,
 } from '../submission/src/sim.js';
@@ -21,6 +24,75 @@ for (const mapId of MAP_ORDER) {
       assert.ok(distance > 18, `${mapId} spawn overlaps ${obstacle.label}`);
     }
   }
+}
+
+for (const difficulty of ['easy', 'normal', 'hard']) {
+  const practice = createPracticeSimulation('Tester', { difficulty });
+  const bot = practice.players.find((player) => player.isBot);
+  assert.equal(practice.difficulty, difficulty);
+  assert.equal(bot.botDifficulty, difficulty);
+}
+assert.ok(DIFFICULTIES.easy.aimWobble > DIFFICULTIES.normal.aimWobble);
+assert.ok(DIFFICULTIES.normal.aimWobble > DIFFICULTIES.hard.aimWobble);
+assert.ok(
+  DIFFICULTIES.easy.predictionSeconds <
+    DIFFICULTIES.normal.predictionSeconds,
+);
+assert.ok(
+  DIFFICULTIES.normal.predictionSeconds <
+    DIFFICULTIES.hard.predictionSeconds,
+);
+assert.equal(DIFFICULTIES.hard.usesSlide, true);
+
+function botAimError(difficulty, durationMs = 500) {
+  const state = createPracticeSimulation('Tester', {
+    difficulty,
+    now: 1000,
+  });
+  const human = state.players.find((player) => !player.isBot);
+  const bot = state.players.find((player) => player.isBot);
+  human.health = 1000;
+  let now = 1000;
+  let hardSprintObserved = false;
+  for (let elapsed = 0; elapsed < durationMs; elapsed += 50) {
+    now += 50;
+    updateSimulation(state, 0.05, now);
+    if (difficulty === 'hard' && state.inputs[bot.id]?.sprint) {
+      hardSprintObserved = true;
+    }
+  }
+  const input = state.inputs[bot.id];
+  const aimedAt = Math.atan2(input.targetY - bot.y, input.targetX - bot.x);
+  const targetAngle = Math.atan2(human.y - bot.y, human.x - bot.x);
+  return {
+    error: Math.abs(normalizeAngle(aimedAt - targetAngle)),
+    hardSprintObserved,
+  };
+}
+
+const easyAim = botAimError('easy');
+const normalAim = botAimError('normal');
+const hardAim = botAimError('hard');
+assert.ok(easyAim.error > normalAim.error);
+assert.ok(normalAim.error > hardAim.error);
+assert.equal(hardAim.hardSprintObserved, true);
+
+{
+  const state = createPracticeSimulation('Tester', {
+    difficulty: 'hard',
+    now: 1000,
+  });
+  const human = state.players.find((player) => !player.isBot);
+  const bot = state.players.find((player) => player.isBot);
+  human.health = 10000;
+  let now = 1000;
+  let usedSlide = false;
+  for (let elapsed = 0; elapsed < 4200; elapsed += 50) {
+    now += 50;
+    updateSimulation(state, 0.05, now);
+    usedSlide ||= Boolean(state.inputs[bot.id]?.slide);
+  }
+  assert.equal(usedSlide, true);
 }
 
 function createTestSimulation(weapon = 'pistol') {
@@ -141,6 +213,12 @@ console.log(
       mgStaminaCost: WEAPONS.mg.staminaCost,
       mgMaxBloom: MG_MAX_BLOOM,
       maps: MAP_ORDER,
+      difficulties: Object.keys(DIFFICULTIES),
+      aimError: {
+        easy: easyAim.error,
+        normal: normalAim.error,
+        hard: hardAim.error,
+      },
     },
     null,
     2,

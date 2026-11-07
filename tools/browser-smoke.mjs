@@ -251,6 +251,26 @@ async function main() {
     throw new Error(`Initial state invalid: ${JSON.stringify(initial)}`);
   }
   await captureScreenshot(path.join('proof', 'final-entry.png'));
+  const difficultyStates = [];
+  for (const difficulty of ['easy', 'normal', 'hard']) {
+    await evaluate(`(() => {
+      const select = document.querySelector('#difficulty-select');
+      select.value = ${JSON.stringify(difficulty)};
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    const selected = await evaluate(
+      `window.__AFTERSHOT__.app.selectedDifficulty`,
+    );
+    if (selected !== difficulty) {
+      throw new Error(`Difficulty switch failed: ${difficulty} -> ${selected}`);
+    }
+    difficultyStates.push(selected);
+  }
+  await evaluate(`(() => {
+    const select = document.querySelector('#difficulty-select');
+    select.value = 'normal';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
   if (process.env.CAPTURE_SCALE === '2') {
     await captureScreenshot(
       path.join('proof', process.env.CAPTURE_NAME || 'live-final-2x.png'),
@@ -304,6 +324,24 @@ async function main() {
   await clickSelector('#practice-button');
   await waitFor(`window.__AFTERSHOT__.app.view === 'game'`);
   await new Promise((resolve) => setTimeout(resolve, 350));
+  const practiceDifficulty = await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const bot = app.gameState.players.find((player) => player.isBot);
+    return { state: app.gameState.difficulty, bot: bot?.botDifficulty };
+  })()`);
+  if (practiceDifficulty.state !== 'normal' || practiceDifficulty.bot !== 'normal') {
+    throw new Error(`Practice difficulty invalid: ${JSON.stringify(practiceDifficulty)}`);
+  }
+  await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    for (const player of app.gameState.players) {
+      if (player.isBot) {
+        player.alive = false;
+        player.health = 0;
+        player.respawnAt = performance.now() + 60000;
+      }
+    }
+  })()`);
   const immersiveState = await evaluate(`(() => ({
     fullscreen: Boolean(document.fullscreenElement),
     keyboardLocked: window.__AFTERSHOT__.app.keyboardLocked,
@@ -352,7 +390,11 @@ async function main() {
     `window.__AFTERSHOT__.app.gameState.timeLeft`,
   );
   await pressKey('Escape', 'Escape', 27);
-  await new Promise((resolve) => setTimeout(resolve, 600));
+  await waitFor(`window.__AFTERSHOT__.app.menuOpen === true`, 3000);
+  const pauseStartedAt = await evaluate(
+    `window.__AFTERSHOT__.app.gameState.timeLeft`,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 500));
   const paused = await evaluate(`(() => ({
     menuOpen: window.__AFTERSHOT__.app.menuOpen,
     panelVisible: !document.querySelector('#pause-panel').classList.contains('is-hidden'),
@@ -361,9 +403,11 @@ async function main() {
   if (
     !paused.menuOpen ||
     !paused.panelVisible ||
-    Math.abs(paused.timeLeft - timeBeforePause) > 0.15
+    Math.abs(paused.timeLeft - pauseStartedAt) > 0.08
   ) {
-    throw new Error(`Escape pause failed: ${JSON.stringify({ timeBeforePause, paused })}`);
+    throw new Error(
+      `Escape pause failed: ${JSON.stringify({ timeBeforePause, pauseStartedAt, paused })}`,
+    );
   }
 
   const blockedShortcut = await evaluate(`(() => {
@@ -783,10 +827,18 @@ async function main() {
   const results = {
     initial,
     fourRowLayout,
+        difficultyStates,
+        practiceDifficulty,
         mapStates,
         immersiveState,
         ctrlWBlocked,
-        pauseState: { timeBeforePause, paused, resumed, blockedShortcut },
+        pauseState: {
+          timeBeforePause,
+          pauseStartedAt,
+          paused,
+          resumed,
+          blockedShortcut,
+        },
     movement: { before: beforeMove, after: afterMove },
         bottomEdge,
     pistolAmmo,

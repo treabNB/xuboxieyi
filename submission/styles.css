@@ -390,8 +390,31 @@ input::placeholder {
 
 .entry-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1.15fr 1fr;
   gap: 8px;
+}
+
+.practice-cluster {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 62px;
+  gap: 4px;
+}
+
+.difficulty-select {
+  min-width: 0;
+  height: 42px;
+  padding: 0 6px;
+  color: var(--ink);
+  background: var(--amber);
+  border: 1px solid var(--amber);
+  border-radius: 2px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.difficulty-select:hover {
+  background: #ffdb88;
 }
 
 .action-button {
@@ -1291,6 +1314,7 @@ kbd {
   }
 
   input,
+  .difficulty-select,
   .action-button {
     height: 38px;
     min-height: 38px;

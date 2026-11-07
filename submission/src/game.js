@@ -1,4 +1,6 @@
 import {
+  DEFAULT_DIFFICULTY,
+  DIFFICULTIES,
   MATCH_SECONDS,
   PLAYER_RADIUS,
   SCORE_LIMIT,
@@ -33,6 +35,7 @@ const dom = {
   lobbyPanel: document.querySelector('#lobby-panel'),
   endPanel: document.querySelector('#end-panel'),
   playerName: document.querySelector('#player-name'),
+  difficultySelect: document.querySelector('#difficulty-select'),
   roomCode: document.querySelector('#room-code-input'),
   practice: document.querySelector('#practice-button'),
   createRoom: document.querySelector('#create-room-button'),
@@ -99,6 +102,7 @@ const app = {
   remoteInputs: new Map(),
   selectedWeapon: 'pistol',
   selectedMapId: DEFAULT_MAP_ID,
+  selectedDifficulty: DEFAULT_DIFFICULTY,
   forcePointerUp: false,
   reloadRequested: false,
   slideLatchUntil: 0,
@@ -345,10 +349,33 @@ function selectMap(mapId, broadcast = true) {
       now: performance.now(),
       preview: true,
       mapId,
+      difficulty: app.selectedDifficulty,
       reducedMotion,
     });
   } else if (app.mode === 'lobby-host' && broadcast) {
     app.net?.selectMap(mapId);
+  }
+}
+
+function setDifficulty(difficultyId, persist = true) {
+  const difficulty =
+    DIFFICULTIES[difficultyId]?.id ?? DEFAULT_DIFFICULTY;
+  app.selectedDifficulty = difficulty;
+  dom.difficultySelect.value = difficulty;
+  if (app.gameState) {
+    app.gameState.difficulty = difficulty;
+    for (const player of app.gameState.players) {
+      if (player.isBot) {
+        player.botDifficulty = difficulty;
+      }
+    }
+  }
+  if (persist) {
+    try {
+      localStorage.setItem('aftershot-difficulty', difficulty);
+    } catch {
+      // Storage can be unavailable in hardened browser contexts.
+    }
   }
 }
 
@@ -364,13 +391,16 @@ function beginLocalPractice() {
     now: performance.now(),
     reducedMotion,
     mapId: app.selectedMapId,
+    difficulty: app.selectedDifficulty,
   });
   app.scene?.setMap(app.selectedMapId);
   app.snapshot = null;
   resetVisualState();
   setView('game');
   setNetworkStatus('本地演练', 'online');
-  dom.roomLabel.textContent = '练习场';
+  dom.roomLabel.textContent = `人机对战 · ${
+    DIFFICULTIES[app.selectedDifficulty]?.label ?? '普通'
+  }`;
   showBanner('校准开始');
   if (!navigator.webdriver) {
     void enterImmersiveMode();
@@ -464,6 +494,7 @@ function returnToEntry() {
     now: performance.now(),
     preview: true,
     mapId: app.selectedMapId,
+    difficulty: app.selectedDifficulty,
   });
   app.snapshot = null;
   app.remoteInputs.clear();
@@ -2051,6 +2082,9 @@ function wireUi() {
       beginLocalPractice();
     }
   });
+  dom.difficultySelect.addEventListener('change', () => {
+    setDifficulty(dom.difficultySelect.value);
+  });
 
   for (const button of dom.weaponButtons) {
     button.addEventListener('click', () => chooseWeapon(button.dataset.weapon));
@@ -2147,11 +2181,20 @@ function wireUi() {
   });
 }
 
+let storedDifficulty = 'normal';
+try {
+  storedDifficulty = localStorage.getItem('aftershot-difficulty') || 'normal';
+} catch {
+  storedDifficulty = 'normal';
+}
+setDifficulty(storedDifficulty, false);
+
 app.gameState = createPracticeSimulation(playerName(), {
   now: performance.now(),
   preview: true,
   reducedMotion,
   mapId: app.selectedMapId,
+  difficulty: app.selectedDifficulty,
 });
 setView('entry');
 setNetworkStatus('本地', 'online');

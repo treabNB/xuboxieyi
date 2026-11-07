@@ -13,6 +13,44 @@ export const SCORE_LIMIT = 15;
 export const MATCH_SECONDS = 150;
 export const MG_MAX_BLOOM = 40;
 
+export const DIFFICULTIES = {
+  easy: {
+    id: 'easy',
+    label: '简单',
+    aimWobble: 0.2,
+    predictionSeconds: 0,
+    cycleMs: 2600,
+    aimRatio: 0.62,
+    moveScale: 0.72,
+    usesSprint: false,
+    usesSlide: false,
+  },
+  normal: {
+    id: 'normal',
+    label: '普通',
+    aimWobble: 0.075,
+    predictionSeconds: 0.08,
+    cycleMs: 2100,
+    aimRatio: 0.74,
+    moveScale: 0.9,
+    usesSprint: false,
+    usesSlide: false,
+  },
+  hard: {
+    id: 'hard',
+    label: '困难',
+    aimWobble: 0.022,
+    predictionSeconds: 0.22,
+    cycleMs: 1750,
+    aimRatio: 0.84,
+    moveScale: 1,
+    usesSprint: true,
+    usesSlide: true,
+  },
+};
+
+export const DEFAULT_DIFFICULTY = 'normal';
+
 export const STAMINA = {
   max: 100,
   regenPerSecond: 15,
@@ -137,6 +175,9 @@ export function makePlayer(id, name, slot, options = {}) {
     name: String(name || `玩家 ${slot + 1}`).slice(0, 12),
     slot,
     isBot: Boolean(options.isBot),
+    botDifficulty: DIFFICULTIES[options.difficulty]?.id ?? DEFAULT_DIFFICULTY,
+    vx: 0,
+    vy: 0,
     x: options.x ?? spawn.x,
     y: options.y ?? spawn.y,
     angle: options.angle ?? spawn.angle,
@@ -180,6 +221,7 @@ export function createSimulation(roster, options = {}) {
     makePlayer(entry.id, entry.name, index, {
       isBot: entry.isBot,
       weapon: entry.weapon,
+      difficulty: entry.difficulty,
       mapId,
     }),
   );
@@ -191,6 +233,8 @@ export function createSimulation(roster, options = {}) {
     eventId: 1,
     status: 'playing',
     mapId,
+    difficulty:
+      DIFFICULTIES[options.difficulty]?.id ?? DEFAULT_DIFFICULTY,
     winner: null,
     timeLeft: MATCH_SECONDS,
     startedAt: now,
@@ -202,9 +246,17 @@ export function createSimulation(roster, options = {}) {
 
 export function createPracticeSimulation(playerName = '训练员', options = {}) {
   const now = options.now ?? performance.now();
+  const difficulty =
+    DIFFICULTIES[options.difficulty]?.id ?? DEFAULT_DIFFICULTY;
   const roster = [
     { id: 'local', name: playerName },
-    { id: 'bot-1', name: BOT_NAMES[0], isBot: true, weapon: 'sniper' },
+    {
+      id: 'bot-1',
+      name: BOT_NAMES[0],
+      isBot: true,
+      weapon: 'sniper',
+      difficulty,
+    },
   ];
   if (options.preview) {
     roster.push({
@@ -221,6 +273,7 @@ export function createPracticeSimulation(playerName = '训练员', options = {})
     now,
     preview: options.preview,
     mapId: options.mapId,
+    difficulty,
   });
   if (options.preview) {
     const preview = getMapDefinition(state.mapId).preview;
@@ -559,7 +612,9 @@ function driveBot(state, player, dt, now) {
     return;
   }
 
-  player.botClock += dt;
+  const tuning =
+    DIFFICULTIES[player.botDifficulty] ?? DIFFICULTIES[DEFAULT_DIFFICULTY];
+  player.botClock += dt * 1000;
   const angleToTarget = Math.atan2(
     target.candidate.y - player.y,
     target.candidate.x - player.x,
@@ -580,20 +635,40 @@ function driveBot(state, player, dt, now) {
     keys.down = !keys.up;
   }
 
-  const cycleLength =
-    player.weapon === 'sniper' ? 2750 : player.weapon === 'mg' ? 1500 : 1250;
-  const releaseAt = player.weapon === 'sniper' ? 0.84 : 0.67;
+  const cycleLength = tuning.cycleMs;
+  const releaseAt = tuning.aimRatio;
   const cycle = (player.botClock + player.slot * 610) % cycleLength;
   const pointerDown = cycle < cycleLength * releaseAt;
   const wobble =
     Math.sin(player.botClock * 0.0022 + player.slot) *
-    (player.weapon === 'sniper' ? 0.045 : 0.12);
+    tuning.aimWobble;
+  const predictedX = clamp(
+    target.candidate.x + target.candidate.vx * tuning.predictionSeconds,
+    70,
+    WORLD.width - 70,
+  );
+  const predictedY = clamp(
+    target.candidate.y + target.candidate.vy * tuning.predictionSeconds,
+    70,
+    WORLD.playBottom - 20,
+  );
+  const slide =
+    tuning.usesSlide &&
+    player.stamina >= STAMINA.slideCost &&
+    player.botClock % 4200 < 120;
+  const sprint =
+    tuning.usesSprint &&
+    target.distance > 350 &&
+    player.stamina > 25 &&
+    !slide;
 
   setInput(state, player.id, {
     ...keys,
     pointerDown,
-    targetX: target.candidate.x + Math.cos(angleToTarget + Math.PI / 2) * wobble * 500,
-    targetY: target.candidate.y + Math.sin(angleToTarget + Math.PI / 2) * wobble * 500,
+    sprint,
+    slide,
+    targetX: predictedX + Math.cos(angleToTarget + Math.PI / 2) * wobble * 500,
+    targetY: predictedY + Math.sin(angleToTarget + Math.PI / 2) * wobble * 500,
     weapon: player.weapon,
   });
 }
@@ -601,6 +676,8 @@ function driveBot(state, player, dt, now) {
 function updatePlayer(state, player, dt, now) {
   const map = getMapDefinition(state.mapId);
   if (!player.alive) {
+    player.vx = 0;
+    player.vy = 0;
     if (player.respawnAt > 0 && now >= player.respawnAt) {
       respawnPlayer(player, map);
     }
@@ -614,6 +691,8 @@ function updatePlayer(state, player, dt, now) {
   if (!player.pointerDown && now - player.lastShotAt > 180) {
     player.mgBloom = Math.max(0, player.mgBloom - dt * 3.4);
   }
+  const previousX = player.x;
+  const previousY = player.y;
 
   if (player.isBot) {
     driveBot(state, player, dt, now);
@@ -701,6 +780,10 @@ function updatePlayer(state, player, dt, now) {
       ? lerp(1, weapon.moveAimScale, aimCharge)
       : 1;
   const carryScale = weapon.moveScale ?? 1;
+  const agentScale = player.isBot
+    ? (DIFFICULTIES[player.botDifficulty] ?? DIFFICULTIES[DEFAULT_DIFFICULTY])
+        .moveScale
+    : 1;
   if (sliding) {
     player.sprinting = false;
     moveWithCollision(
@@ -711,7 +794,7 @@ function updatePlayer(state, player, dt, now) {
     );
   } else {
     const sprintScale = player.sprinting ? STAMINA.sprintMultiplier : 1;
-    const speed = 220 * aimScale * carryScale * sprintScale;
+    const speed = 220 * aimScale * carryScale * agentScale * sprintScale;
     if (player.sprinting) {
       player.stamina = Math.max(
         0,
@@ -775,6 +858,8 @@ function updatePlayer(state, player, dt, now) {
       player.stamina + STAMINA.regenPerSecond * dt,
     );
   }
+  player.vx = (player.x - previousX) / Math.max(dt, 0.001);
+  player.vy = (player.y - previousY) / Math.max(dt, 0.001);
 }
 
 export function updateSimulation(state, dt, now) {

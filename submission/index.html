@@ -68,9 +68,16 @@
           </div>
 
           <div class="entry-actions">
-            <button id="practice-button" class="action-button action-button--primary" type="button">
-              进入练习
-            </button>
+            <div class="practice-cluster">
+              <button id="practice-button" class="action-button action-button--primary" type="button">
+                人机对战
+              </button>
+              <select id="difficulty-select" class="difficulty-select" aria-label="人机难度">
+                <option value="easy">简单</option>
+                <option value="normal" selected>普通</option>
+                <option value="hard">困难</option>
+              </select>
+            </div>
             <button id="create-room-button" class="action-button" type="button">
               建立房间
             </button>
