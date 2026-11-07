@@ -399,6 +399,54 @@ async function main() {
   await waitFor(`window.__AFTERSHOT__.app.view === 'game'`);
   await waitFor(`Boolean(window.__BATTLE_PERF__)`, 5000);
   const battlePerformance = await evaluate(`window.__BATTLE_PERF__`);
+  if (
+    battlePerformance.p95FrameMs > 90 ||
+    battlePerformance.maxFrameMs > 150 ||
+    battlePerformance.maxLongTaskMs > 100
+  ) {
+    throw new Error(
+      `Battle entry performance regressed: ${JSON.stringify(battlePerformance)}`,
+    );
+  }
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  const fogVisibilityPixels = await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    const canvas = document.querySelector('#game-canvas canvas');
+    const context = canvas.getContext('2d');
+    const sample = (worldX, worldY) => {
+      const scaleX = canvas.width / 1600;
+      const scaleY = canvas.height / 1000;
+      const pixels = context.getImageData(
+        Math.round(worldX * scaleX) - 2,
+        Math.round(worldY * scaleY) - 2,
+        5,
+        5,
+      ).data;
+      let total = 0;
+      for (let index = 0; index < pixels.length; index += 4) {
+        total += pixels[index] * 0.2126 + pixels[index + 1] * 0.7152 + pixels[index + 2] * 0.0722;
+      }
+      return total / (pixels.length / 4);
+    };
+    const forward = 110;
+    return {
+      inside: sample(
+        local.x + Math.cos(local.angle) * forward,
+        local.y + Math.sin(local.angle) * forward,
+      ),
+      outside: sample(
+        local.x - Math.cos(local.angle) * forward,
+        local.y - Math.sin(local.angle) * forward,
+      ),
+    };
+  })()`);
+  if (fogVisibilityPixels.inside <= fogVisibilityPixels.outside + 8) {
+    throw new Error(
+      `Fog is inverted: ${JSON.stringify(fogVisibilityPixels)}`,
+    );
+  }
+  await captureScreenshot(path.join('proof', 'fog-orientation.png'));
   if (process.env.PERF_ONLY === '1') {
     let hottestFunctions = [];
     if (process.env.PERF_PROFILE === '1') {
@@ -427,6 +475,7 @@ async function main() {
     const performanceResult = {
       variant: performanceVariant,
       battlePerformance,
+      fogVisibilityPixels,
       hottestFunctions,
       consoleErrors,
     };
@@ -436,15 +485,6 @@ async function main() {
     );
     console.log(JSON.stringify(performanceResult, null, 2));
     return;
-  }
-  if (
-    battlePerformance.p95FrameMs > 90 ||
-    battlePerformance.maxFrameMs > 150 ||
-    battlePerformance.maxLongTaskMs > 100
-  ) {
-    throw new Error(
-      `Battle entry performance regressed: ${JSON.stringify(battlePerformance)}`,
-    );
   }
   await new Promise((resolve) => setTimeout(resolve, 350));
   const practiceDifficulty = await evaluate(`(() => {
@@ -1029,6 +1069,7 @@ async function main() {
         difficultyStates,
         practiceDifficulty,
     battlePerformance,
+    fogVisibilityPixels,
         mapStates,
         immersiveState,
         ctrlWBlocked,

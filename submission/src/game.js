@@ -89,6 +89,7 @@ const dom = {
 
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 const cssColor = (value) => `#${value.toString(16).padStart(6, '0')}`;
+const FOG_TEXTURE_SCALE = 0.5;
 
 const app = {
   scene: null,
@@ -978,14 +979,17 @@ class ArenaScene extends Phaser.Scene {
     this.dynamicGraphics = this.add.graphics().setDepth(8);
     this.effectGraphics = this.add.graphics().setDepth(10);
     this.reticleGraphics = this.add.graphics().setDepth(12);
-    this.fogMaskGraphics = this.make.graphics({ add: false });
-    this.fogMask = this.fogMaskGraphics.createGeometryMask();
-    this.fogMask.invertAlpha = true;
+    this.fogTexture = this.textures.createCanvas(
+      'arena-fog-layer',
+      WORLD.width * FOG_TEXTURE_SCALE,
+      WORLD.height * FOG_TEXTURE_SCALE,
+    );
+    this.fogTexture.setFilter(Phaser.Textures.FilterMode.LINEAR);
     this.fog = this.add
-      .rectangle(0, 0, WORLD.width, WORLD.height, 0x030606, 0.8)
+      .image(0, 0, 'arena-fog-layer')
       .setOrigin(0)
       .setDepth(16)
-      .setMask(this.fogMask)
+      .setDisplaySize(WORLD.width, WORLD.height)
       .setVisible(false);
     this.keys = this.input.keyboard.addKeys({
       up: 'W',
@@ -2021,12 +2025,8 @@ class ArenaScene extends Phaser.Scene {
         Math.cos(local.angle - (this.lastFogAngle ?? Number.NaN)),
       ),
     );
-    const needsRebuild =
-      !this.visibilityPolygon?.length ||
-      moved > 0.8 ||
-      turned > 0.004 ||
-      now - (this.lastFogAt ?? 0) >= 33;
-    if (!needsRebuild) {
+    const changed = !this.visibilityPolygon?.length || moved > 0.8 || turned > 0.004;
+    if (!changed || now - (this.lastFogAt ?? 0) < 33) {
       return;
     }
 
@@ -2046,9 +2046,28 @@ class ArenaScene extends Phaser.Scene {
       rays: 64,
     });
 
-    this.fogMaskGraphics.clear();
-    this.fogMaskGraphics.fillStyle(0xffffff, 1);
-    this.fogMaskGraphics.fillPoints(this.visibilityPolygon, true);
+    const context = this.fogTexture.context;
+    const textureWidth = this.fogTexture.width;
+    const textureHeight = this.fogTexture.height;
+    context.clearRect(0, 0, textureWidth, textureHeight);
+    context.fillStyle = 'rgba(3, 6, 6, 0.8)';
+    context.fillRect(0, 0, textureWidth, textureHeight);
+    context.globalCompositeOperation = 'destination-out';
+    context.beginPath();
+    for (let index = 0; index < this.visibilityPolygon.length; index += 1) {
+      const point = this.visibilityPolygon[index];
+      const x = point.x * FOG_TEXTURE_SCALE;
+      const y = point.y * FOG_TEXTURE_SCALE;
+      if (index === 0) {
+        context.moveTo(x, y);
+      } else {
+        context.lineTo(x, y);
+      }
+    }
+    context.closePath();
+    context.fill();
+    context.globalCompositeOperation = 'source-over';
+    this.fogTexture.refresh();
     this.fog.setVisible(true);
     this.lastFogAt = now;
     this.lastFogX = local.x;
