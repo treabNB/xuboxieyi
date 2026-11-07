@@ -22,6 +22,7 @@ export const DIFFICULTIES = {
     cycleMs: 2600,
     aimRatio: 0.62,
     moveScale: 0.72,
+    weaponSwitchMs: 3000,
     usesSprint: false,
     usesSlide: false,
   },
@@ -33,6 +34,7 @@ export const DIFFICULTIES = {
     cycleMs: 2100,
     aimRatio: 0.74,
     moveScale: 0.9,
+    weaponSwitchMs: 1200,
     usesSprint: false,
     usesSlide: false,
   },
@@ -44,6 +46,7 @@ export const DIFFICULTIES = {
     cycleMs: 1750,
     aimRatio: 0.84,
     moveScale: 1,
+    weaponSwitchMs: 720,
     usesSprint: true,
     usesSlide: true,
   },
@@ -212,6 +215,8 @@ export function makePlayer(id, name, slot, options = {}) {
     slideDirY: 0,
     botClock: 0,
     botPointerDown: false,
+    botWeaponStep: Math.max(0, BOT_WEAPONS.indexOf(weapon)),
+    botWeaponDecisionAt: 0,
   };
 }
 
@@ -590,11 +595,48 @@ function respawnPlayer(player, map) {
   player.slideCooldownEnd = 0;
   player.slideDirX = 0;
   player.slideDirY = 0;
+  player.botWeaponDecisionAt = 0;
   player.ammo = {
     pistol: WEAPONS.pistol.magazine,
     sniper: WEAPONS.sniper.magazine,
     mg: WEAPONS.mg.magazine,
   };
+}
+
+function chooseBotWeapon(player, tuning, distance) {
+  const canUse = (weaponId) =>
+    player.ammo[weaponId] > 0 &&
+    player.stamina >= (WEAPONS[weaponId].staminaCost ?? 0);
+  let preferred;
+
+  if (tuning.id === 'easy') {
+    player.botWeaponStep = (player.botWeaponStep + 1) % BOT_WEAPONS.length;
+    preferred = BOT_WEAPONS[player.botWeaponStep];
+  } else if (tuning.id === 'hard') {
+    preferred =
+      distance > 500
+        ? 'sniper'
+        : distance < 210
+          ? 'pistol'
+          : distance < 430
+            ? 'mg'
+            : 'sniper';
+  } else {
+    preferred =
+      distance > 610 ? 'sniper' : distance < 250 ? 'pistol' : 'mg';
+  }
+
+  if (canUse(preferred)) {
+    return preferred;
+  }
+
+  const fallbackOrder =
+    distance > 480
+      ? ['sniper', 'mg', 'pistol']
+      : distance < 230
+        ? ['pistol', 'mg', 'sniper']
+        : ['mg', 'pistol', 'sniper'];
+  return fallbackOrder.find(canUse) ?? player.weapon;
 }
 
 function driveBot(state, player, dt, now) {
@@ -615,6 +657,16 @@ function driveBot(state, player, dt, now) {
   const tuning =
     DIFFICULTIES[player.botDifficulty] ?? DIFFICULTIES[DEFAULT_DIFFICULTY];
   player.botClock += dt * 1000;
+  const decisionDue =
+    player.botWeaponDecisionAt <= now ||
+    player.ammo[player.weapon] <= 0;
+  if (decisionDue) {
+    player.botWeaponDecisionAt =
+      now + tuning.weaponSwitchMs + ((player.slot * 137 + Math.floor(now / 1000) * 53) % 180);
+  }
+  const nextWeapon = decisionDue
+    ? chooseBotWeapon(player, tuning, target.distance)
+    : player.weapon;
   const angleToTarget = Math.atan2(
     target.candidate.y - player.y,
     target.candidate.x - player.x,
@@ -622,7 +674,7 @@ function driveBot(state, player, dt, now) {
   const orbitDirection =
     Math.sin(player.slot * 3.7 + player.botClock * 0.00055) > 0 ? 1 : -1;
   const approach =
-    target.distance > WEAPONS[player.weapon].range * 0.82 ? 1 : -0.35;
+    target.distance > WEAPONS[nextWeapon].range * 0.82 ? 1 : -0.35;
   const moveAngle = angleToTarget + orbitDirection * Math.PI * 0.58;
   const keys = {
     right: Math.cos(moveAngle) > 0.18,
@@ -669,7 +721,7 @@ function driveBot(state, player, dt, now) {
     slide,
     targetX: predictedX + Math.cos(angleToTarget + Math.PI / 2) * wobble * 500,
     targetY: predictedY + Math.sin(angleToTarget + Math.PI / 2) * wobble * 500,
-    weapon: player.weapon,
+    weapon: nextWeapon,
   });
 }
 

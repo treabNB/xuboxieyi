@@ -780,6 +780,82 @@ async function main() {
     throw new Error(`HUD state invalid: ${JSON.stringify(ui)}`);
   }
 
+  await clickSelector('.weapon-button[data-weapon="sniper"]');
+  await waitFor(
+    `document.querySelectorAll('.weapon-button.is-active').length === 1 &&
+      document.querySelector('.weapon-button.is-active')?.dataset.weapon === 'sniper'`,
+  );
+  await pressKey('1', 'Digit1', 51);
+  await waitFor(
+    `document.querySelectorAll('.weapon-button.is-active').length === 1 &&
+      document.querySelector('.weapon-button.is-active')?.dataset.weapon === 'pistol'`,
+  );
+  const weaponSelection = await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    const active = [...document.querySelectorAll('.weapon-button.is-active')];
+    return {
+      appWeapon: app.selectedWeapon,
+      playerWeapon: local.weapon,
+      activeWeapons: active.map((button) => button.dataset.weapon),
+    };
+  })()`);
+  if (
+    weaponSelection.appWeapon !== 'pistol' ||
+    weaponSelection.playerWeapon !== 'pistol' ||
+    weaponSelection.activeWeapons.length !== 1 ||
+    weaponSelection.activeWeapons[0] !== 'pistol'
+  ) {
+    throw new Error(
+      `Weapon selection frame desynchronized: ${JSON.stringify(weaponSelection)}`,
+    );
+  }
+
+  await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const bot = app.gameState.players.find((player) => player.isBot);
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    bot.alive = true;
+    bot.health = 100;
+    bot.respawnAt = 0;
+    bot.x = 380;
+    bot.y = 500;
+    bot.weapon = 'mg';
+    bot.stamina = 100;
+    bot.botWeaponDecisionAt = 0;
+    local.x = 1120;
+    local.y = 500;
+    app.__weaponSwitchStart = bot.weapon;
+  })()`);
+  await waitFor(
+    `window.__AFTERSHOT__.app.gameState.players.find((player) => player.isBot).weapon !==
+      window.__AFTERSHOT__.app.__weaponSwitchStart`,
+    2500,
+  );
+  const botWeaponSwitch = await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const bot = app.gameState.players.find((player) => player.isBot);
+    const active = document.querySelector('.weapon-button.is-active');
+    return {
+      from: app.__weaponSwitchStart,
+      to: bot.weapon,
+      playerFrame: active?.dataset.weapon,
+    };
+  })()`);
+  if (botWeaponSwitch.playerFrame !== 'pistol') {
+    throw new Error(
+      `Bot switch moved the player's weapon frame: ${JSON.stringify(botWeaponSwitch)}`,
+    );
+  }
+  await evaluate(`(() => {
+    const bot = window.__AFTERSHOT__.app.gameState.players.find(
+      (player) => player.isBot,
+    );
+    bot.alive = false;
+    bot.health = 0;
+    bot.respawnAt = performance.now() + 60000;
+  })()`);
+
   await evaluate(`(() => {
     const app = window.__AFTERSHOT__.app;
     const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
@@ -850,6 +926,8 @@ async function main() {
         movementPenalty: { pistolDistance, mgDistance, speedRatio },
         slideState,
         slideKeyDuring,
+    weaponSelection,
+    botWeaponSwitch,
         visibilityScreenshot: 'proof/visibility-occlusion.png',
     ui,
     consoleErrors,

@@ -44,6 +44,37 @@ assert.ok(
 );
 assert.equal(DIFFICULTIES.hard.usesSlide, true);
 
+for (const difficulty of ['easy', 'normal', 'hard']) {
+  const state = createPracticeSimulation('Tester', {
+    difficulty,
+    now: 1000,
+  });
+  const human = state.players.find((player) => !player.isBot);
+  const bot = state.players.find((player) => player.isBot);
+  human.health = 10000;
+  human.x = 1260;
+  human.y = 650;
+  bot.x = 320;
+  bot.y = 650;
+  const weaponsUsed = new Set();
+  let now = 1000;
+  for (let elapsed = 0; elapsed < 7000; elapsed += 50) {
+    if (elapsed === 3500) {
+      human.x = 470;
+      human.y = 650;
+      bot.x = 900;
+      bot.y = 650;
+    }
+    now += 50;
+    updateSimulation(state, 0.05, now);
+    weaponsUsed.add(bot.weapon);
+  }
+  assert.ok(
+    weaponsUsed.size >= 2,
+    `${difficulty} bot did not switch weapons: ${[...weaponsUsed].join(', ')}`,
+  );
+}
+
 function botAimError(difficulty, durationMs = 500) {
   const state = createPracticeSimulation('Tester', {
     difficulty,

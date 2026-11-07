@@ -633,16 +633,20 @@ function consumeGameEvent(event) {
   }
 }
 
-function chooseWeapon(weaponId) {
-  if (!WEAPONS[weaponId]) {
-    return;
-  }
-  app.selectedWeapon = weaponId;
+function syncWeaponButtons(weaponId) {
   for (const button of dom.weaponButtons) {
     const selected = button.dataset.weapon === weaponId;
     button.classList.toggle('is-active', selected);
     button.setAttribute('aria-pressed', String(selected));
   }
+}
+
+function chooseWeapon(weaponId) {
+  if (!WEAPONS[weaponId]) {
+    return;
+  }
+  app.selectedWeapon = weaponId;
+  syncWeaponButtons(weaponId);
   if (app.mode === 'practice' || app.mode === 'host') {
     const local = app.gameState?.players.find(
       (player) => player.id === app.localPlayerId,
@@ -772,11 +776,10 @@ function updateHud(players, now) {
       ? '散布回收'
       : '按住鼠标';
 
-  for (const button of dom.weaponButtons) {
-    const selected = button.dataset.weapon === local.weapon;
-    button.classList.toggle('is-active', selected);
-    button.setAttribute('aria-pressed', String(selected));
+  if (app.mode !== 'client') {
+    app.selectedWeapon = local.weapon;
   }
+  syncWeaponButtons(local.weapon);
 
   dom.scoreboard.replaceChildren();
   ranking.forEach((player, index) => {
@@ -2130,6 +2133,28 @@ function wireUi() {
         return;
       }
       if (app.view !== 'game' && app.view !== 'ended') {
+        return;
+      }
+
+      const weaponByCode = {
+        Digit1: 'pistol',
+        Numpad1: 'pistol',
+        Digit2: 'sniper',
+        Numpad2: 'sniper',
+        Digit3: 'mg',
+        Numpad3: 'mg',
+      };
+      const requestedWeapon = weaponByCode[event.code];
+      if (
+        requestedWeapon &&
+        app.view === 'game' &&
+        !app.menuOpen &&
+        app.gameState?.status === 'playing'
+      ) {
+        event.preventDefault();
+        if (!event.repeat) {
+          chooseWeapon(requestedWeapon);
+        }
         return;
       }
 
