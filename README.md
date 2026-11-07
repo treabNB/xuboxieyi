@@ -44,6 +44,8 @@ https://yuboxieyi.netlify.app/
 - Pages 默认地址：`https://treabnb.github.io/xuboxieyi/`
 - 自定义域名：`https://xuboxieyi.cc.cd/`
 - `submission/CNAME` 已设置为 `xuboxieyi.cc.cd`。
+- GitHub Pages 工作流已成功部署；DNSHE 的 CNAME/扁平化 A 记录已解析到 GitHub Pages，HTTP 入口可用。
+- HTTPS 证书由 GitHub Pages 自动签发，签发完成前浏览器可能显示证书域名不匹配。
 
 DNSHE 中需要将 `xuboxieyi.cc.cd` 的记录配置为：
 

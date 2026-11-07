@@ -6,6 +6,8 @@ GitHub Pages 默认地址：`https://treabnb.github.io/xuboxieyi/`
 
 已配置的自定义域名：`xuboxieyi.cc.cd`
 
+当前状态：DNS 已解析到 GitHub Pages，HTTP 页面已可访问；HTTPS 证书由 GitHub Pages 自动签发。
+
 ## DNSHE 记录
 
 在 DNSHE 的 DNS 解析面板中添加：

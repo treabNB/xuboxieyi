@@ -171,7 +171,7 @@ manifestations:
 - `tools/multiplayer-smoke.mjs` 通过真实 PeerJS 四客户端房间：4 人入房、房主开始、访客移动同步、射击同步、比分达到四行、对局结束和返回房间。
 - 2× 像素检查：线上 `https://yuboxieyi.netlify.app/` 的 `proof/live-final-2x.png` 尺寸为 2880×1800，矢量 UI、Canvas 目标和字体均保持清晰。
 - 线上浏览器控制台：单机与双端联机复测均为 0 error；四端联机使用同一已部署构建在本机验证。
-- GitHub Pages 工作流 `42345230141` 已成功发布当前版本到 `treabNB/xuboxieyi`，Pages 自定义域名已设置为 `xuboxieyi.cc.cd`。DNSHE 中仍待添加 `CNAME xuboxieyi.cc.cd -> treabnb.github.io`，因此自定义域名尚未完成解析与 HTTPS 签发。
+- GitHub Pages 工作流已成功部署当前版本到 `treabNB/xuboxieyi`，自定义域名 `xuboxieyi.cc.cd` 已解析到 GitHub Pages，HTTP 游戏入口已通过浏览器回归；HTTPS 自定义域证书仍在 GitHub 自动签发队列中。
 
 ## Known Limits
 
