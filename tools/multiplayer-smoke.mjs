@@ -224,6 +224,10 @@ try {
   await guest.start();
 
   await host.evaluate(`document.querySelector('#player-name').value = '房主-游隼'`);
+  await host.evaluate(`(() => {
+    window.__AFTERSHOT__.selectMatchMode('long');
+    window.__AFTERSHOT__.selectCharacter('falcon');
+  })()`);
   await host.click('#create-room-button');
   await host.waitFor(
     `!document.querySelector('#lobby-panel').classList.contains('is-hidden')`,
@@ -236,6 +240,10 @@ try {
   }
 
   await guest.evaluate(`document.querySelector('#player-name').value = '访客-灰烬'`);
+  await guest.evaluate(`(() => {
+    window.__AFTERSHOT__.selectMatchMode('long');
+    window.__AFTERSHOT__.selectCharacter('ash');
+  })()`);
   await guest.typeInto('#room-code-input', roomCode);
   await guest.click('#join-room-button');
   await guest.waitFor(
@@ -245,6 +253,10 @@ try {
   if (expectedPlayers >= 3) {
     await guestTwo.start();
     await guestTwo.evaluate(`document.querySelector('#player-name').value = '访客-噪点'`);
+    await guestTwo.evaluate(`(() => {
+      window.__AFTERSHOT__.selectMatchMode('long');
+      window.__AFTERSHOT__.selectCharacter('agent46');
+    })()`);
     await guestTwo.typeInto('#room-code-input', roomCode);
     await guestTwo.click('#join-room-button');
     await guestTwo.waitFor(
@@ -255,6 +267,10 @@ try {
   if (expectedPlayers >= 4) {
     await guestThree.start();
     await guestThree.evaluate(`document.querySelector('#player-name').value = '访客-余烬'`);
+    await guestThree.evaluate(`(() => {
+      window.__AFTERSHOT__.selectMatchMode('long');
+      window.__AFTERSHOT__.selectCharacter('falcon');
+    })()`);
     await guestThree.typeInto('#room-code-input', roomCode);
     await guestThree.click('#join-room-button');
     await guestThree.waitFor(
@@ -271,6 +287,23 @@ try {
   await host.waitFor(`window.__AFTERSHOT__.app.scene.currentMapId === 'harbor'`);
   await guest.waitFor(`window.__AFTERSHOT__.app.selectedMapId === 'harbor'`, 8000);
   await guest.waitFor(`window.__AFTERSHOT__.app.scene.currentMapId === 'harbor'`, 8000);
+  await guest.waitFor(`window.__AFTERSHOT__.app.selectedMatchMode === 'long'`);
+
+  const roleSync = await host.evaluate(`(() => ({
+    matchMode: window.__AFTERSHOT__.app.selectedMatchMode,
+    roles: window.__AFTERSHOT__.app.net
+      .getRoster()
+      .map((player) => ({ name: player.name, characterId: player.characterId })),
+  }))()`);
+  if (
+    roleSync.matchMode !== 'long' ||
+    roleSync.roles.find((player) => player.name === '房主-游隼')?.characterId !==
+      'falcon' ||
+    roleSync.roles.find((player) => player.name === '访客-灰烬')?.characterId !==
+      'ash'
+  ) {
+    throw new Error(`Role synchronization failed: ${JSON.stringify(roleSync)}`);
+  }
 
   await host.screenshot(path.join('proof', 'lobby-host.png'));
   await guest.screenshot(path.join('proof', 'lobby-guest.png'));
@@ -289,6 +322,13 @@ try {
 
   const guestId = await guest.evaluate(
     `window.__AFTERSHOT__.app.localPlayerId`,
+  );
+  await guest.keyDown('q', 'KeyQ', 81);
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  await guest.keyUp('q', 'KeyQ', 81);
+  await host.waitFor(
+    `window.__AFTERSHOT__.app.gameState.players.find((player) => player.id === ${JSON.stringify(guestId)}).burningUntil > performance.now()`,
+    4000,
   );
   const before = await host.evaluate(`(() => {
     const app = window.__AFTERSHOT__.app;
@@ -355,6 +395,8 @@ try {
       roster: app.net.getRoster().length,
       shots: app.gameState.events.filter((event) => event.type === 'shot').length,
       status: app.net ? 'connected' : 'missing',
+      matchMode: app.gameState.matchMode,
+      characters: app.gameState.players.map((player) => player.characterId),
       scoreboardRows: rows.length,
       lastRowBottom: lastRect?.bottom ?? 0,
       viewportHeight: innerHeight,
@@ -364,6 +406,8 @@ try {
     networkResult.players !== expectedPlayers ||
     networkResult.roster !== expectedPlayers ||
     networkResult.shots < 1 ||
+    networkResult.matchMode !== 'long' ||
+    !networkResult.characters.includes('ash') ||
     networkResult.scoreboardRows !== expectedPlayers ||
     networkResult.lastRowBottom > networkResult.viewportHeight
   ) {
@@ -418,6 +462,7 @@ try {
     clients: expectedPlayers,
     roomCode,
         mapId: 'harbor',
+    roleSync,
     before,
     after,
     networkResult,

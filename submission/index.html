@@ -98,9 +98,19 @@
             </button>
           </div>
 
+          <div class="mode-select">
+            <span class="map-select__label">对局</span>
+            <div id="entry-mode-picker" class="mode-picker" aria-label="选择对局模式"></div>
+          </div>
+
           <div class="map-select">
             <span class="map-select__label">战场</span>
             <div id="entry-map-picker" class="map-picker" aria-label="选择练习地图"></div>
+          </div>
+
+          <div id="entry-character-select" class="character-select is-hidden">
+            <span class="map-select__label">职业</span>
+            <div id="entry-character-picker" class="character-picker" aria-label="选择职业"></div>
           </div>
 
           <div class="weapon-brief" aria-label="武器说明">
@@ -138,6 +148,8 @@
             <span><kbd>ESC</kbd> 菜单</span>
             <span><kbd>1 2 3 / 滚轮</kbd> 换枪</span>
             <span><kbd>R</kbd> 换弹</span>
+            <span><kbd>Q E</kbd> 职业技能</span>
+            <span><kbd>X</kbd> 46号偷袭</span>
           </div>
 
           <p id="entry-message" class="entry-message" role="status" aria-live="polite"></p>
@@ -159,6 +171,14 @@
             <span class="map-select__label">战场</span>
             <div id="lobby-map-picker" class="map-picker" aria-label="选择对局地图"></div>
           </div>
+          <div class="mode-select">
+            <span class="map-select__label">对局</span>
+            <div id="lobby-mode-picker" class="mode-picker" aria-label="选择对局模式"></div>
+          </div>
+          <div id="lobby-character-select" class="character-select is-hidden">
+            <span class="map-select__label">职业</span>
+            <div id="lobby-character-picker" class="character-picker" aria-label="选择职业"></div>
+          </div>
           <div class="lobby-actions">
             <button id="start-match-button" class="action-button action-button--primary" type="button">
               开始对局
@@ -170,6 +190,9 @@
           <p id="lobby-message" class="entry-message" role="status" aria-live="polite"></p>
         </section>
 
+        <div id="system-alert" class="system-alert is-hidden" role="status" aria-live="assertive"></div>
+        <div id="burn-overlay" class="burn-overlay is-hidden" aria-hidden="true"></div>
+        <div id="flash-overlay" class="flash-overlay is-hidden" aria-hidden="true"></div>
         <div id="round-banner" class="round-banner" aria-live="assertive"></div>
 
         <div id="respawn-panel" class="respawn-panel is-hidden" aria-live="polite">
@@ -211,9 +234,34 @@
             <span><kbd>CTRL</kbd> 疾跑</span>
             <span><kbd>SPACE</kbd> 滑铲</span>
             <span><kbd>滚轮</kbd> 切换武器</span>
+            <span><kbd>Q E X</kbd> 职业技能</span>
             <span><kbd>ESC</kbd> 继续</span>
           </p>
         </section>
+      </section>
+
+      <section id="ability-hud" class="ability-hud is-hidden" aria-label="职业技能">
+        <div class="character-readout">
+          <span>职业</span>
+          <strong id="character-name">游隼</strong>
+          <small id="character-passive">滑铲距离 +35%</small>
+        </div>
+        <div class="ability-slot" data-skill-slot="1">
+          <kbd id="skill1-key">Q</kbd>
+          <div>
+            <strong id="skill1-name">战术闪光弹</strong>
+            <small id="skill1-state">3 次 · 就绪</small>
+          </div>
+          <span id="skill1-meter" class="ability-meter"></span>
+        </div>
+        <div class="ability-slot" data-skill-slot="2">
+          <kbd id="skill2-key">E</kbd>
+          <div>
+            <strong id="skill2-name">战术干扰波</strong>
+            <small id="skill2-state">就绪</small>
+          </div>
+          <span id="skill2-meter" class="ability-meter"></span>
+        </div>
       </section>
 
       <footer class="bottom-hud">
@@ -233,6 +281,7 @@
             <span id="stamina-fill"></span>
           </div>
           <p id="player-callsign">游隼 / 本地</p>
+          <p id="status-line" class="status-line"></p>
         </section>
 
         <section class="weapon-rack" aria-label="武器选择">

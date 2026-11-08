@@ -1,19 +1,29 @@
 import {
   DEFAULT_DIFFICULTY,
+  DEFAULT_MATCH_MODE,
   DIFFICULTIES,
+  FOOTSTEP_RANGE,
+  MATCH_MODES,
   MATCH_SECONDS,
   PLAYER_RADIUS,
   SCORE_LIMIT,
   WEAPON_ORDER,
   WEAPONS,
   WORLD,
+  canAssassinate,
   createPracticeSimulation,
   createSimulation,
-  getAimStats,
+  getEffectiveAimStats,
   makeSnapshot,
   setInput,
   updateSimulation,
 } from './sim.js';
+import {
+  CHARACTERS,
+  CHARACTER_ORDER,
+  DEFAULT_CHARACTER_ID,
+  getCharacterDefinition,
+} from './characters.js';
 import { NetworkSession } from './network.js';
 import {
   DEFAULT_MAP_ID,
@@ -46,6 +56,12 @@ const dom = {
   lobbySlots: document.querySelector('#lobby-slots'),
   lobbyMapPicker: document.querySelector('#lobby-map-picker'),
   entryMapPicker: document.querySelector('#entry-map-picker'),
+  lobbyModePicker: document.querySelector('#lobby-mode-picker'),
+  entryModePicker: document.querySelector('#entry-mode-picker'),
+  lobbyCharacterSelect: document.querySelector('#lobby-character-select'),
+  entryCharacterSelect: document.querySelector('#entry-character-select'),
+  lobbyCharacterPicker: document.querySelector('#lobby-character-picker'),
+  entryCharacterPicker: document.querySelector('#entry-character-picker'),
   lobbyMessage: document.querySelector('#lobby-message'),
   copyRoom: document.querySelector('#copy-room-button'),
   startMatch: document.querySelector('#start-match-button'),
@@ -63,6 +79,9 @@ const dom = {
   networkStatus: document.querySelector('#network-status'),
   feed: document.querySelector('#feed'),
   banner: document.querySelector('#round-banner'),
+  systemAlert: document.querySelector('#system-alert'),
+  burnOverlay: document.querySelector('#burn-overlay'),
+  flashOverlay: document.querySelector('#flash-overlay'),
   respawn: document.querySelector('#respawn-panel'),
   respawnCount: document.querySelector('#respawn-count'),
   healthValue: document.querySelector('#health-value'),
@@ -71,6 +90,7 @@ const dom = {
   staminaFill: document.querySelector('#stamina-fill'),
   staminaState: document.querySelector('#stamina-state'),
   playerCallsign: document.querySelector('#player-callsign'),
+  statusLine: document.querySelector('#status-line'),
   ammoValue: document.querySelector('#ammo-value'),
   ammoMax: document.querySelector('#ammo-max'),
   reloadLabel: document.querySelector('#reload-label'),
@@ -86,6 +106,17 @@ const dom = {
   endSummary: document.querySelector('#end-summary'),
   restart: document.querySelector('#restart-button'),
   returnLobby: document.querySelector('#return-lobby-button'),
+  abilityHud: document.querySelector('#ability-hud'),
+  characterName: document.querySelector('#character-name'),
+  characterPassive: document.querySelector('#character-passive'),
+  skill1Key: document.querySelector('#skill1-key'),
+  skill1Name: document.querySelector('#skill1-name'),
+  skill1State: document.querySelector('#skill1-state'),
+  skill1Meter: document.querySelector('#skill1-meter'),
+  skill2Key: document.querySelector('#skill2-key'),
+  skill2Name: document.querySelector('#skill2-name'),
+  skill2State: document.querySelector('#skill2-state'),
+  skill2Meter: document.querySelector('#skill2-meter'),
   weaponButtons: [...document.querySelectorAll('.weapon-button')],
 };
 
@@ -105,9 +136,14 @@ const app = {
   remoteInputs: new Map(),
   selectedWeapon: 'pistol',
   selectedMapId: DEFAULT_MAP_ID,
+  selectedMatchMode: DEFAULT_MATCH_MODE,
+  selectedCharacterId: DEFAULT_CHARACTER_ID,
   selectedDifficulty: DEFAULT_DIFFICULTY,
   forcePointerUp: false,
   reloadRequested: false,
+  skill1LatchUntil: 0,
+  skill2LatchUntil: 0,
+  assassinateLatchUntil: 0,
   slideLatchUntil: 0,
   menuOpen: false,
   keyboardLocked: false,
@@ -120,6 +156,7 @@ const app = {
   latestLocalPlayer: null,
   scoreboardSignature: '',
   wheelSwitchAt: 0,
+  alertUntil: 0,
   toastTimer: null,
 };
 
@@ -159,8 +196,16 @@ function resetVisualState() {
   app.seenEvents.clear();
   app.endedShown = false;
   app.scoreboardSignature = '';
+  app.skill1LatchUntil = 0;
+  app.skill2LatchUntil = 0;
+  app.assassinateLatchUntil = 0;
   dom.feed.replaceChildren();
   dom.scoreboard.replaceChildren();
+  dom.systemAlert.classList.add('is-hidden');
+  dom.burnOverlay.classList.add('is-hidden');
+  dom.flashOverlay.classList.add('is-hidden');
+  dom.flashOverlay.style.opacity = '0';
+  app.alertUntil = 0;
   dom.endPanel.classList.add('is-hidden');
   dom.respawn.classList.add('is-hidden');
   app.menuOpen = false;
@@ -173,6 +218,12 @@ function showBanner(text) {
   dom.banner.classList.remove('is-visible');
   void dom.banner.offsetWidth;
   dom.banner.classList.add('is-visible');
+}
+
+function showSystemAlert(text, duration = 2600) {
+  dom.systemAlert.textContent = text;
+  dom.systemAlert.classList.remove('is-hidden');
+  app.alertUntil = performance.now() + duration;
 }
 
 const KEYBOARD_LOCK_CODES = [
@@ -340,6 +391,137 @@ function renderMapPickers() {
   updateMapSelectionUI();
 }
 
+function updateModeSelectionUI() {
+  const selectedMode = MATCH_MODES[app.selectedMatchMode] ?? MATCH_MODES.quick;
+  dom.app.dataset.matchMode = selectedMode.id;
+  for (const button of document.querySelectorAll('.mode-button')) {
+    const selected = button.dataset.matchMode === selectedMode.id;
+    button.classList.toggle('is-active', selected);
+    button.setAttribute('aria-pressed', String(selected));
+  }
+  for (const button of dom.lobbyModePicker.querySelectorAll('.mode-button')) {
+    button.disabled = app.net?.role !== 'host';
+  }
+  const showCharacters = selectedMode.id === 'long';
+  dom.entryCharacterSelect.classList.toggle('is-hidden', !showCharacters);
+  dom.lobbyCharacterSelect.classList.toggle('is-hidden', !showCharacters);
+}
+
+function updateCharacterSelectionUI() {
+  const selectedCharacter =
+    getCharacterDefinition(app.selectedCharacterId) ??
+    getCharacterDefinition(DEFAULT_CHARACTER_ID);
+  dom.app.dataset.character = selectedCharacter.id;
+  dom.app.style.setProperty('--character-color', selectedCharacter.cssColor);
+  for (const button of document.querySelectorAll('.character-button')) {
+    const selected = button.dataset.character === selectedCharacter.id;
+    button.classList.toggle('is-active', selected);
+    button.setAttribute('aria-pressed', String(selected));
+  }
+  updateModeSelectionUI();
+}
+
+function renderModePickers() {
+  for (const container of [dom.entryModePicker, dom.lobbyModePicker]) {
+    container.replaceChildren();
+    for (const mode of Object.values(MATCH_MODES)) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'mode-button';
+      button.dataset.matchMode = mode.id;
+      const name = document.createElement('strong');
+      name.textContent = mode.label;
+      const duration = document.createElement('small');
+      duration.textContent = `${Math.floor(mode.durationSeconds / 60)}:${String(
+        mode.durationSeconds % 60,
+      ).padStart(2, '0')}`;
+      button.append(name, duration);
+      button.addEventListener('click', () => selectMatchMode(mode.id));
+      container.append(button);
+    }
+  }
+  updateModeSelectionUI();
+}
+
+function renderCharacterPickers() {
+  for (const container of [
+    dom.entryCharacterPicker,
+    dom.lobbyCharacterPicker,
+  ]) {
+    container.replaceChildren();
+    for (const characterId of CHARACTER_ORDER) {
+      const character = CHARACTERS[characterId];
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'character-button';
+      button.dataset.character = character.id;
+      button.style.setProperty('--character-color', character.cssColor);
+      const role = document.createElement('span');
+      role.textContent = character.title;
+      const name = document.createElement('strong');
+      name.textContent = character.name;
+      const passive = document.createElement('small');
+      passive.textContent = character.passive;
+      button.append(role, name, passive);
+      button.addEventListener('click', () => selectCharacter(character.id));
+      container.append(button);
+    }
+  }
+  updateCharacterSelectionUI();
+}
+
+function refreshPreviewState() {
+  if (app.mode !== 'preview') {
+    return;
+  }
+  app.gameState = createPracticeSimulation(playerName(), {
+    now: performance.now(),
+    preview: true,
+    mapId: app.selectedMapId,
+    difficulty: app.selectedDifficulty,
+    matchMode: app.selectedMatchMode,
+    characterId: app.selectedCharacterId,
+    reducedMotion,
+  });
+}
+
+function selectMatchMode(matchMode, broadcast = true) {
+  if (!MATCH_MODES[matchMode]) {
+    return;
+  }
+  app.selectedMatchMode = matchMode;
+  try {
+    localStorage.setItem('aftershot-match-mode', matchMode);
+  } catch {
+    // Selection still applies for this session.
+  }
+  updateModeSelectionUI();
+  refreshPreviewState();
+  if (app.mode === 'lobby-host' && broadcast) {
+    app.net?.selectMatchMode(matchMode);
+  }
+}
+
+function selectCharacter(characterId, broadcast = true) {
+  if (!CHARACTERS[characterId]) {
+    return;
+  }
+  app.selectedCharacterId = characterId;
+  try {
+    localStorage.setItem('aftershot-character', characterId);
+  } catch {
+    // Selection still applies for this session.
+  }
+  updateCharacterSelectionUI();
+  refreshPreviewState();
+  if (
+    broadcast &&
+    (app.mode === 'lobby-host' || app.mode === 'lobby-client')
+  ) {
+    app.net?.selectCharacter(characterId);
+  }
+}
+
 function selectMap(mapId, broadcast = true) {
   if (!MAPS[mapId]) {
     return;
@@ -352,13 +534,7 @@ function selectMap(mapId, broadcast = true) {
   app.scene?.setMap(mapId);
 
   if (app.mode === 'preview') {
-    app.gameState = createPracticeSimulation(playerName(), {
-      now: performance.now(),
-      preview: true,
-      mapId,
-      difficulty: app.selectedDifficulty,
-      reducedMotion,
-    });
+    refreshPreviewState();
   } else if (app.mode === 'lobby-host' && broadcast) {
     app.net?.selectMap(mapId);
   }
@@ -402,6 +578,8 @@ async function beginLocalPractice() {
     reducedMotion,
     mapId: app.selectedMapId,
     difficulty: app.selectedDifficulty,
+    matchMode: app.selectedMatchMode,
+    characterId: app.selectedCharacterId,
   });
   app.scene?.setMap(app.selectedMapId);
   app.snapshot = null;
@@ -410,7 +588,7 @@ async function beginLocalPractice() {
   setNetworkStatus('本地演练', 'online');
   dom.roomLabel.textContent = `人机对战 · ${
     DIFFICULTIES[app.selectedDifficulty]?.label ?? '普通'
-  }`;
+  } · ${MATCH_MODES[app.selectedMatchMode]?.label ?? '快局'}`;
   showBanner('校准开始');
 }
 
@@ -426,27 +604,36 @@ async function beginHostMatch() {
     now: performance.now(),
     reducedMotion,
     mapId: app.selectedMapId,
+    matchMode: app.selectedMatchMode,
   });
   app.scene?.setMap(app.selectedMapId);
   app.snapshot = null;
   app.remoteInputs.clear();
   resetVisualState();
-  app.net.startMatch(roster, app.selectedMapId);
+  app.net.startMatch(roster, app.selectedMapId, app.selectedMatchMode);
   setView('game');
   setNetworkStatus(`${roster.length} 人在线`, 'online');
   dom.roomLabel.textContent = `房间 ${app.net.roomCode}`;
   showBanner('频道锁定');
 }
 
-function beginClientMatch(roster, playerId, mapId = app.selectedMapId) {
+function beginClientMatch(
+  roster,
+  playerId,
+  mapId = app.selectedMapId,
+  matchMode = app.selectedMatchMode,
+) {
   app.mode = 'client';
   app.localPlayerId = playerId;
   app.selectedWeapon = 'pistol';
   app.selectedMapId = getMapDefinition(mapId).id;
+  app.selectedMatchMode =
+    MATCH_MODES[matchMode]?.id ?? DEFAULT_MATCH_MODE;
   app.gameState = createSimulation(roster, {
     now: performance.now(),
     reducedMotion,
     mapId: app.selectedMapId,
+    matchMode: app.selectedMatchMode,
   });
   app.scene?.setMap(app.selectedMapId);
   app.snapshot = null;
@@ -457,8 +644,16 @@ function beginClientMatch(roster, playerId, mapId = app.selectedMapId) {
   showBanner('频道锁定');
 }
 
-function renderLobby(roster, roomCode) {
+function renderLobby(roster, roomCode, matchMode = app.selectedMatchMode) {
   app.mode = app.net?.role === 'host' ? 'lobby-host' : 'lobby-client';
+  app.selectedMatchMode =
+    MATCH_MODES[matchMode]?.id ?? app.selectedMatchMode;
+  const localRoster = roster.find(
+    (player) => player.id === app.net?.localPlayerId,
+  );
+  if (localRoster?.characterId) {
+    app.selectedCharacterId = localRoster.characterId;
+  }
   setView('lobby');
   dom.lobbyCode.textContent = roomCode || app.net?.roomCode || '------';
   dom.lobbySlots.replaceChildren();
@@ -473,11 +668,17 @@ function renderLobby(roster, roomCode) {
     const name = document.createElement('strong');
     name.textContent = player?.name ?? '等待加入';
     const role = document.createElement('small');
-    role.textContent = player ? (player.isHost ? 'HOST' : 'READY') : 'OPEN';
+    role.textContent = player
+      ? `${
+          getCharacterDefinition(player.characterId)?.name ?? '快局'
+        } · ${player.isHost ? 'HOST' : 'READY'}`
+      : 'OPEN';
     row.append(index, name, role);
     dom.lobbySlots.append(row);
   }
   renderMapPickers();
+  renderModePickers();
+  renderCharacterPickers();
 
   const canStart = app.net?.role === 'host' && roster.length >= 2;
   dom.startMatch.disabled = !canStart;
@@ -502,6 +703,8 @@ function returnToEntry() {
     preview: true,
     mapId: app.selectedMapId,
     difficulty: app.selectedDifficulty,
+    matchMode: app.selectedMatchMode,
+    characterId: app.selectedCharacterId,
   });
   app.snapshot = null;
   app.remoteInputs.clear();
@@ -527,18 +730,25 @@ function configureNetwork() {
       app.snapshot = snapshot;
       app.snapshotReceivedAt = performance.now();
       app.selectedMapId = getMapDefinition(snapshot.mapId).id;
+      app.selectedMatchMode =
+        MATCH_MODES[snapshot.matchMode]?.id ?? app.selectedMatchMode;
       if (app.gameState) {
         app.gameState.status = snapshot.status;
         app.gameState.winner = snapshot.winner;
         app.gameState.timeLeft = snapshot.timeLeft;
         app.gameState.mapId = app.selectedMapId;
+        app.gameState.matchMode = app.selectedMatchMode;
       }
       app.scene?.setMap(app.selectedMapId);
       updateMapSelectionUI();
       setNetworkStatus('已同步', 'online');
     },
-    onMatchStart: (roster, playerId, mapId) => {
-      beginClientMatch(roster, playerId, mapId);
+    onMatchStart: (roster, playerId, mapId, matchMode) => {
+      beginClientMatch(roster, playerId, mapId, matchMode);
+    },
+    onModeChange: (matchMode) => {
+      selectMatchMode(matchMode, false);
+      renderLobby(app.net?.getRoster() ?? [], app.net?.roomCode ?? '', matchMode);
     },
     onMapChange: (mapId) => {
       selectMap(mapId, false);
@@ -579,7 +789,11 @@ async function createRoom() {
   dom.createRoom.disabled = true;
   try {
     configureNetwork();
-    await app.net.createRoom(playerName());
+    await app.net.createRoom(
+      playerName(),
+      app.selectedCharacterId,
+      app.selectedMatchMode,
+    );
     app.net.selectMap(app.selectedMapId);
     renderLobby(app.net.getRoster(), app.net.roomCode);
   } catch (error) {
@@ -597,7 +811,11 @@ async function joinRoom() {
   dom.joinRoom.disabled = true;
   try {
     configureNetwork();
-    await app.net.joinRoom(dom.roomCode.value, playerName());
+    await app.net.joinRoom(
+      dom.roomCode.value,
+      playerName(),
+      app.selectedCharacterId,
+    );
     renderLobby(app.net.getRoster(), app.net.roomCode);
   } catch (error) {
     setEntryMessage(error?.message || '无法加入房间。');
@@ -633,6 +851,9 @@ function consumeGameEvent(event) {
   app.seenEvents.add(event.id);
   if (event.type === 'kill') {
     addFeed(event.shooterName || '未知', event.targetName || '目标', event.weapon);
+  }
+  if (event.type === 'recon' && event.shooter !== app.localPlayerId) {
+    showSystemAlert('你的位置已泄露');
   }
   app.scene?.addGameEffect(event);
   if (app.seenEvents.size > 800) {
@@ -670,6 +891,21 @@ function chooseWeapon(weaponId) {
 
 function requestReload() {
   app.reloadRequested = true;
+  if (app.mode === 'practice' || app.mode === 'host') {
+    const local = app.gameState?.players.find(
+      (player) => player.id === app.localPlayerId,
+    );
+    const weapon = local ? WEAPONS[local.weapon] : null;
+    if (
+      local &&
+      weapon &&
+      local.ammo[local.weapon] < weapon.magazine &&
+      local.reloadEnd <= performance.now()
+    ) {
+      local.reloadEnd = performance.now() + weapon.reloadMs;
+      local.reloadWeapon = local.weapon;
+    }
+  }
 }
 
 function visionForPlayer(player) {
@@ -678,11 +914,13 @@ function visionForPlayer(player) {
   }
   const aim =
     player.weapon === 'sniper'
-      ? getAimStats(
+      ? getEffectiveAimStats(
           player.weapon,
           player.aimMs ?? 0,
           Boolean(player.pointerDown),
           player.bloom ?? 0,
+          player.characterId,
+          (player.jammedRemaining ?? 0) > 0,
         )
       : { charge: 0 };
   return getVisionProfile(
@@ -709,7 +947,13 @@ function updateScoreboard(ranking, local) {
     const place = document.createElement('span');
     place.textContent = String(index + 1).padStart(2, '0');
     const name = document.createElement('span');
-    name.textContent = player.name;
+    const character = getCharacterDefinition(player.characterId);
+    name.textContent = character
+      ? `${player.name} · ${character.name}`
+      : player.name;
+    if (character) {
+      name.style.color = character.cssColor;
+    }
     const score = document.createElement('strong');
     score.textContent = String(player.score ?? 0).padStart(2, '0');
     if (player.id !== local.id) {
@@ -718,6 +962,140 @@ function updateScoreboard(ranking, local) {
     row.append(place, name, score);
     dom.scoreboard.append(row);
   });
+}
+
+function secondsLabel(milliseconds) {
+  return `${Math.max(0, milliseconds / 1000).toFixed(1)}s`;
+}
+
+function updateAbilityHud(local, now) {
+  const character = getCharacterDefinition(local.characterId);
+  const visible = app.view === 'game' && Boolean(character);
+  dom.abilityHud.classList.toggle('is-hidden', !visible);
+  if (!visible) {
+    dom.flashOverlay.classList.add('is-hidden');
+    dom.burnOverlay.classList.add('is-hidden');
+    dom.statusLine.textContent = '';
+    return;
+  }
+
+  dom.characterName.textContent = `${character.name} / ${character.title}`;
+  dom.characterPassive.textContent = character.passive;
+  dom.skill1Key.textContent = character.skill1.key;
+  dom.skill1Name.textContent = character.skill1.name;
+  dom.skill2Key.textContent = character.skill2.key;
+  dom.skill2Name.textContent = character.skill2.name;
+
+  const skill1Remaining = local.skill1ReadyRemaining ?? 0;
+  if (character.id === 'falcon') {
+    dom.skill1State.textContent = `${local.skill1Uses ?? 0} 次 · ${
+      local.skill1Uses > 0 ? '就绪' : '已耗尽'
+    }`;
+    dom.skill1Meter.style.width = `${((local.skill1Uses ?? 0) / 3) * 100}%`;
+  } else if (character.id === 'ash') {
+    dom.skill1State.textContent =
+      (local.burningRemaining ?? 0) > 0
+        ? `燃烧 ${secondsLabel(local.burningRemaining)}`
+        : skill1Remaining > 0
+          ? `冷却 ${secondsLabel(skill1Remaining)}`
+          : '就绪';
+    dom.skill1Meter.style.width = `${
+      (local.burningRemaining ?? 0) > 0
+        ? ((local.burningRemaining ?? 0) / 20000) * 100
+        : skill1Remaining > 0
+          ? (1 - skill1Remaining / 80000) * 100
+          : 100
+    }%`;
+  } else {
+    dom.skill1State.textContent =
+      (local.reconRemaining ?? 0) > 0
+        ? `侦查 ${secondsLabel(local.reconRemaining)}`
+        : skill1Remaining > 0
+          ? `冷却 ${secondsLabel(skill1Remaining)}`
+          : '就绪';
+    dom.skill1Meter.style.width = `${
+      (local.reconRemaining ?? 0) > 0
+        ? ((local.reconRemaining ?? 0) / 2000) * 100
+        : skill1Remaining > 0
+          ? (1 - skill1Remaining / 30000) * 100
+          : 100
+    }%`;
+  }
+
+  const skill2Remaining = local.skill2ReadyRemaining ?? 0;
+  if (character.id === 'falcon') {
+    dom.skill2State.textContent =
+      (local.jamCastRemaining ?? 0) > 0
+        ? `锁定释放 ${secondsLabel(local.jamCastRemaining)}`
+        : skill2Remaining > 0
+          ? `冷却 ${secondsLabel(skill2Remaining)}`
+          : '就绪';
+    dom.skill2Meter.style.width = `${
+      (local.jamCastRemaining ?? 0) > 0
+        ? (1 - (local.jamCastRemaining ?? 0) / 5000) * 100
+        : skill2Remaining > 0
+          ? (1 - skill2Remaining / 60000) * 100
+          : 100
+    }%`;
+  } else if (character.id === 'ash') {
+    dom.skill2State.textContent = local.focusActive
+      ? '专注开启 · 10 体力/秒'
+      : '点击开启';
+    dom.skill2Meter.style.width = `${Math.max(0, local.stamina ?? 0)}%`;
+  } else {
+    dom.skill2State.textContent = local.assassinationReady
+      ? '背后处决就绪'
+      : '贴近目标背后';
+    dom.skill2Meter.style.width = local.assassinationReady ? '100%' : '0%';
+  }
+
+  const slots = document.querySelectorAll('.ability-slot');
+  slots[0]?.classList.toggle('is-active', (local.burningRemaining ?? 0) > 0);
+  slots[0]?.classList.toggle(
+    'is-ready',
+    character.id !== 'falcon' && skill1Remaining <= 0,
+  );
+  slots[1]?.classList.toggle(
+    'is-active',
+    Boolean(local.focusActive || (local.jamCastRemaining ?? 0) > 0),
+  );
+  slots[1]?.classList.toggle(
+    'is-ready',
+    local.assassinationReady || (character.id === 'falcon' && skill2Remaining <= 0),
+  );
+
+  const flashRemaining = Math.max(0, local.flashedRemaining ?? 0);
+  const flashOpacity =
+    flashRemaining > 350
+      ? 0.985
+      : Math.min(0.985, (flashRemaining / 350) * 0.985);
+  dom.flashOverlay.classList.toggle('is-hidden', flashRemaining <= 0);
+  dom.flashOverlay.style.opacity = String(flashOpacity);
+
+  const burning =
+    character.id === 'ash' && (local.burningRemaining ?? 0) > 0;
+  dom.burnOverlay.classList.toggle('is-hidden', !burning);
+  dom.app.dataset.burning = burning ? 'true' : 'false';
+
+  const statuses = [];
+  if ((local.invulnerableRemaining ?? 0) > 0) {
+    statuses.push(`重生保护 ${secondsLabel(local.invulnerableRemaining)}`);
+  }
+  if (flashRemaining > 0) statuses.push(`致盲 ${secondsLabel(flashRemaining)}`);
+  if (burning) statuses.push(`燃烧 ${secondsLabel(local.burningRemaining)}`);
+  if ((local.jamCastRemaining ?? 0) > 0) {
+    statuses.push(`干扰读条 ${secondsLabel(local.jamCastRemaining)}`);
+  }
+  if ((local.jammedRemaining ?? 0) > 0) {
+    statuses.push(`被干扰 ${secondsLabel(local.jammedRemaining)}`);
+  }
+  if (local.focusActive) statuses.push('专注');
+  dom.statusLine.textContent = statuses.join(' · ');
+
+  if (app.alertUntil && now >= app.alertUntil) {
+    app.alertUntil = 0;
+    dom.systemAlert.classList.add('is-hidden');
+  }
 }
 
 function updateHud(players, now) {
@@ -732,7 +1110,9 @@ function updateHud(players, now) {
 
   const state = app.gameState;
   const standby = app.view === 'entry' || app.view === 'lobby';
-  const timeLeft = standby ? MATCH_SECONDS : state?.timeLeft ?? MATCH_SECONDS;
+  const modeSeconds =
+    MATCH_MODES[app.selectedMatchMode]?.durationSeconds ?? MATCH_SECONDS;
+  const timeLeft = standby ? modeSeconds : state?.timeLeft ?? modeSeconds;
   const seconds = Math.max(0, Math.ceil(timeLeft));
   dom.matchClock.textContent = `${String(Math.floor(seconds / 60)).padStart(
     2,
@@ -760,7 +1140,11 @@ function updateHud(players, now) {
       })) ?? players.map((player) => ({ ...player, score: 0, kills: 0, deaths: 0 }))
     : players;
   const ranking = [...standbyRoster].sort(
-    (a, b) => b.score - a.score || b.kills - a.kills || a.deaths - b.deaths,
+    (a, b) =>
+      b.score - a.score ||
+      b.kills - a.kills ||
+      a.deaths - b.deaths ||
+      (b.damageDealt ?? 0) - (a.damageDealt ?? 0),
   );
   const opponentScore = Math.max(
     0,
@@ -772,9 +1156,14 @@ function updateHud(players, now) {
   dom.redScore.textContent = standby
     ? '00'
     : String(opponentScore).padStart(2, '0');
+  const scoreLimit = MATCH_MODES[app.selectedMatchMode]?.scoreLimit;
   dom.scoreProgress.textContent = standby
-    ? `00 / ${SCORE_LIMIT}`
-    : `${String(local.score ?? 0).padStart(2, '0')} / ${SCORE_LIMIT}`;
+    ? scoreLimit
+      ? `00 / ${scoreLimit}`
+      : '00 KILL'
+    : scoreLimit
+      ? `${String(local.score ?? 0).padStart(2, '0')} / ${scoreLimit}`
+      : `${String(local.score ?? 0).padStart(2, '0')} KILL`;
   dom.healthValue.textContent = String(Math.max(0, Math.round(local.health)));
   dom.healthFill.style.width = `${Math.max(0, local.health)}%`;
   dom.app.dataset.danger = local.health <= 30 ? 'true' : 'false';
@@ -786,6 +1175,8 @@ function updateHud(players, now) {
   dom.app.dataset.stamina = stamina <= 20 ? 'low' : 'normal';
   dom.staminaState.textContent = local.sliding
     ? '滑铲中'
+    : local.focusActive
+      ? '专注消耗 10/s'
     : local.sprinting
       ? '疾跑消耗'
       : slideCooldown > 0
@@ -793,9 +1184,10 @@ function updateHud(players, now) {
         : staminaCost > 0 && stamina < staminaCost
           ? '体力不足'
           : '体力 / 滑铲就绪';
+  const character = getCharacterDefinition(local.characterId);
   dom.playerCallsign.textContent = standby
     ? '等待入场'
-    : `${local.name} / ${
+    : `${local.name}${character ? ` / ${character.name}` : ''} / ${
         app.mode === 'client' ? '访客' : app.mode === 'host' ? '房主' : '本地'
       }`;
 
@@ -812,18 +1204,29 @@ function updateHud(players, now) {
     ? (local.aimMs ?? 0) + (app.mode === 'client' ? now - app.snapshotReceivedAt : 0)
     : 0;
   const bloom = local.bloom ?? local.mgBloom ?? 0;
-  const aim = getAimStats(local.weapon, aimMs, local.pointerDown, bloom);
+  const aim = getEffectiveAimStats(
+    local.weapon,
+    aimMs,
+    local.pointerDown,
+    bloom,
+    local.characterId,
+    (local.jammedRemaining ?? 0) > 0,
+  );
   const vision = visionForPlayer(local);
   dom.spreadValue.textContent = `${(aim.spread * (180 / Math.PI)).toFixed(1)}°`;
   dom.visionReadout.textContent = `视野 ${Math.round(
     (vision.halfAngle * 360) / Math.PI,
   )}° / ${Math.round(vision.range)}`;
   dom.focusFill.style.width = `${Math.round(
-    (local.weapon === 'mg' ? Math.min(1, bloom / 40) : aim.charge) * 100,
+    (local.weapon === 'mg'
+      ? Math.min(1, bloom / (local.focusActive ? 30 : 40))
+      : aim.charge) * 100,
   )}%`;
   dom.focusLabel.textContent = local.pointerDown
     ? weapon.trigger === 'hold'
-      ? stamina >= staminaCost
+      ? local.focusActive
+        ? '专注压制'
+        : stamina >= staminaCost
         ? '散布累积'
         : '体力不足'
       : staminaCost > 0 && stamina < staminaCost
@@ -841,6 +1244,7 @@ function updateHud(players, now) {
   syncWeaponButtons(local.weapon);
 
   updateScoreboard(ranking, local);
+  updateAbilityHud(local, now);
 
   const showRespawn = !local.alive && state?.status !== 'ended';
   dom.respawn.classList.toggle('is-hidden', !showRespawn);
@@ -860,7 +1264,11 @@ function showMatchEnd(state, players) {
   closePause();
   app.endedShown = true;
   const ranking = [...players].sort(
-    (a, b) => b.score - a.score || b.kills - a.kills || a.deaths - b.deaths,
+    (a, b) =>
+      b.score - a.score ||
+      b.kills - a.kills ||
+      a.deaths - b.deaths ||
+      (b.damageDealt ?? 0) - (a.damageDealt ?? 0),
   );
   const winner = players.find((player) => player.id === state.winner) ?? ranking[0];
   const localWon = winner?.id === app.localPlayerId;
@@ -917,6 +1325,9 @@ function inputFromScene(scene) {
       sprint: false,
       slide: false,
       reload: false,
+      skill1: false,
+      skill2: false,
+      assassinate: false,
       targetX: local?.x ?? WORLD.width / 2,
       targetY: local?.y ?? WORLD.height / 2,
       weapon: app.selectedWeapon,
@@ -939,6 +1350,15 @@ function inputFromScene(scene) {
   if (Phaser.Input.Keyboard.JustDown(keys.slide)) {
     app.slideLatchUntil = performance.now() + 180;
   }
+  if (Phaser.Input.Keyboard.JustDown(keys.skill1)) {
+    app.skill1LatchUntil = performance.now() + 160;
+  }
+  if (Phaser.Input.Keyboard.JustDown(keys.skill2)) {
+    app.skill2LatchUntil = performance.now() + 160;
+  }
+  if (Phaser.Input.Keyboard.JustDown(keys.assassinate)) {
+    app.assassinateLatchUntil = performance.now() + 160;
+  }
 
   const pointer = scene.input.activePointer;
   const targetX = Phaser.Math.Clamp(pointer.worldX, 0, WORLD.width);
@@ -953,6 +1373,9 @@ function inputFromScene(scene) {
     sprint: keys.sprint.isDown,
     slide: performance.now() < app.slideLatchUntil,
     reload: app.reloadRequested,
+    skill1: performance.now() < app.skill1LatchUntil,
+    skill2: performance.now() < app.skill2LatchUntil,
+    assassinate: performance.now() < app.assassinateLatchUntil,
     targetX,
     targetY,
     weapon: app.selectedWeapon,
@@ -1005,6 +1428,8 @@ class ArenaScene extends Phaser.Scene {
     this.dynamicGraphics = this.add.graphics().setDepth(8);
     this.effectGraphics = this.add.graphics().setDepth(10);
     this.reticleGraphics = this.add.graphics().setDepth(12);
+    this.reconGraphics = this.add.graphics().setDepth(17);
+    this.footstepGraphics = this.add.graphics().setDepth(18);
     this.fogTexture = this.textures.createCanvas(
       'arena-fog-layer',
       WORLD.width * FOG_TEXTURE_SCALE,
@@ -1026,6 +1451,9 @@ class ArenaScene extends Phaser.Scene {
       two: 'TWO',
       three: 'THREE',
       reload: 'R',
+      skill1: 'Q',
+      skill2: 'E',
+      assassinate: 'X',
       sprint: Phaser.Input.Keyboard.KeyCodes.CTRL,
       slide: Phaser.Input.Keyboard.KeyCodes.SPACE,
     });
@@ -1137,6 +1565,7 @@ class ArenaScene extends Phaser.Scene {
 
   buildVisualPlayers() {
     if (app.mode !== 'client') {
+      const map = getMapDefinition(app.gameState?.mapId);
       return (app.gameState?.players ?? []).map((player) => ({
         ...player,
         aimMs: player.pointerDown
@@ -1152,6 +1581,44 @@ class ArenaScene extends Phaser.Scene {
         ),
         ammo: player.ammo[player.weapon],
         bloom: player.mgBloom,
+        invulnerableRemaining: Math.max(
+          0,
+          player.invulnerableUntil - performance.now(),
+        ),
+        flashedRemaining: Math.max(
+          0,
+          player.flashedUntil - performance.now(),
+        ),
+        burningRemaining: Math.max(
+          0,
+          player.burningUntil - performance.now(),
+        ),
+        jamCastRemaining: Math.max(
+          0,
+          player.jamCastUntil - performance.now(),
+        ),
+        jammedRemaining: Math.max(
+          0,
+          player.jammedUntil - performance.now(),
+        ),
+        reconRemaining: Math.max(
+          0,
+          player.reconUntil - performance.now(),
+        ),
+        skill1ReadyRemaining: Math.max(
+          0,
+          player.skill1ReadyAt - performance.now(),
+        ),
+        skill2ReadyRemaining: Math.max(
+          0,
+          player.skill2ReadyAt - performance.now(),
+        ),
+        assassinationReady: canAssassinate(
+          app.gameState,
+          player,
+          map,
+          performance.now(),
+        ),
       }));
     }
 
@@ -1261,6 +1728,35 @@ class ArenaScene extends Phaser.Scene {
         x: event.x,
         y: event.y,
         until: now + 180,
+      });
+    } else if (event.type === 'flash-burst') {
+      this.effects.push({
+        type: 'flash-burst',
+        x: event.x,
+        y: event.y,
+        until: now + 460,
+      });
+    } else if (event.type === 'jam-release') {
+      this.effects.push({
+        type: 'jam-wave',
+        x: event.x,
+        y: event.y,
+        radius: 480,
+        until: now + 720,
+      });
+    } else if (event.type === 'assassinate') {
+      this.effects.push({
+        type: 'assassinate',
+        x: event.x,
+        y: event.y,
+        until: now + 900,
+      });
+    } else if (event.type === 'shield') {
+      this.effects.push({
+        type: 'shield',
+        x: event.x,
+        y: event.y,
+        until: now + 260,
       });
     }
   }
@@ -1720,20 +2216,188 @@ class ArenaScene extends Phaser.Scene {
       this.drawPlayer(graphics, player, now);
     }
 
+    this.drawFlashbangs(graphics, local, now);
     this.drawReticle(players);
     this.drawFog(players, now);
+    this.drawReconOutline(players, local);
+    this.drawFootsteps(players, local, now);
+  }
+
+  drawFlashbangs(graphics, local, now) {
+    if (!local?.alive) {
+      return;
+    }
+    const flashbangs =
+      app.mode === 'client'
+        ? app.snapshot?.flashbangs ?? []
+        : app.gameState?.flashbangs ?? [];
+    const map = getMapDefinition(this.currentMapId);
+    const bounds = {
+      left: WORLD.padding,
+      right: WORLD.width - WORLD.padding,
+      top: WORLD.padding,
+      bottom: WORLD.playBottom,
+    };
+    for (const flashbang of flashbangs) {
+      if (flashbang.owner !== local.id) {
+        const vision = visionForPlayer(local);
+        const distance = Math.hypot(flashbang.x - local.x, flashbang.y - local.y);
+        if (
+          !isPointInVision(
+            local.x,
+            local.y,
+            local.angle,
+            flashbang.x,
+            flashbang.y,
+            vision.halfAngle,
+            vision.range,
+          )
+        ) {
+          continue;
+        }
+        const angle = Math.atan2(flashbang.y - local.y, flashbang.x - local.x);
+        const ray = traceRay(
+          local.x,
+          local.y,
+          angle,
+          distance,
+          map.obstacles,
+          bounds,
+        );
+        if (ray.distance + 4 < distance) {
+          continue;
+        }
+      }
+      const pulse = 1 + Math.sin(now * 0.02) * 0.15;
+      graphics.fillStyle(0xf3c969, 0.94);
+      graphics.fillCircle(flashbang.x, flashbang.y, 6 * pulse);
+      graphics.lineStyle(
+        1.5,
+        (flashbang.explodeRemaining ?? 0) < 500 ? 0xf05b3d : 0xefe7d3,
+        0.92,
+      );
+      graphics.strokeCircle(flashbang.x, flashbang.y, 11);
+    }
+  }
+
+  drawReconOutline(players, local) {
+    const graphics = this.reconGraphics;
+    graphics.clear();
+    this.reconIds = [];
+    if (
+      app.view !== 'game' ||
+      !local?.alive ||
+      local.characterId !== 'agent46' ||
+      (local.reconRemaining ?? 0) <= 0
+    ) {
+      return;
+    }
+    for (const player of players) {
+      if (
+        player.id === local.id ||
+        !player.alive ||
+        this.visiblePlayerIds?.has(player.id)
+      ) {
+        continue;
+      }
+      this.reconIds.push(player.id);
+      const color =
+        getCharacterDefinition(player.characterId)?.color ?? 0xefe7d3;
+      graphics.lineStyle(2, color, 0.82);
+      graphics.strokeCircle(player.x, player.y, PLAYER_RADIUS + 8);
+      graphics.lineBetween(
+        player.x + Math.cos(player.angle) * 11,
+        player.y + Math.sin(player.angle) * 11,
+        player.x + Math.cos(player.angle) * 31,
+        player.y + Math.sin(player.angle) * 31,
+      );
+    }
+  }
+
+  drawFootsteps(players, local, now) {
+    const graphics = this.footstepGraphics;
+    graphics.clear();
+    this.footstepSources = [];
+    if (app.view !== 'game' || !local?.alive) {
+      return;
+    }
+    for (const player of players) {
+      if (player.id === local.id || !player.alive) {
+        continue;
+      }
+      const speed = Math.hypot(player.vx ?? 0, player.vy ?? 0);
+      if (speed < 12) {
+        continue;
+      }
+      if (player.characterId === 'agent46' && !player.sprinting) {
+        continue;
+      }
+      const dx = player.x - local.x;
+      const dy = player.y - local.y;
+      const distance = Math.hypot(dx, dy);
+      if (distance > FOOTSTEP_RANGE || distance < 20) {
+        continue;
+      }
+      const direction = Math.atan2(dy, dx);
+      const closeness = 1 - distance / FOOTSTEP_RANGE;
+      const radius = 62 + closeness * 18;
+      const x = local.x + Math.cos(direction) * radius;
+      const y = local.y + Math.sin(direction) * radius;
+      const tangentX = -Math.sin(direction);
+      const tangentY = Math.cos(direction);
+      const size = 8 + closeness * 13;
+      const sprinting = Boolean(player.sprinting);
+      const color = sprinting ? 0xf05b3d : 0xf3c969;
+      const pulseDuration = sprinting ? 260 : 520;
+      const alpha =
+        0.38 +
+        0.5 * Math.abs(Math.sin((now / pulseDuration) * Math.PI + player.slot));
+      graphics.fillStyle(color, alpha);
+      graphics.fillEllipse(
+        x + tangentX * size * 0.42,
+        y + tangentY * size * 0.42,
+        size * 0.62,
+        size * 1.18,
+      );
+      graphics.fillEllipse(
+        x - tangentX * size * 0.42,
+        y - tangentY * size * 0.42,
+        size * 0.62,
+        size * 1.18,
+      );
+      graphics.lineStyle(1, color, alpha * 0.7);
+      graphics.lineBetween(
+        x - Math.cos(direction) * size * 0.9,
+        y - Math.sin(direction) * size * 0.9,
+        x + Math.cos(direction) * size * 0.9,
+        y + Math.sin(direction) * size * 0.9,
+      );
+      graphics.lineStyle(1, color, alpha * 0.5);
+      graphics.strokeCircle(x, y, size * 1.25);
+      this.footstepSources.push({
+        id: player.id,
+        distance,
+        size,
+        color: sprinting ? 'red' : 'amber',
+        x,
+        y,
+      });
+    }
   }
 
   drawAimCone(graphics, player, now) {
-    const aim = getAimStats(
+    const aim = getEffectiveAimStats(
       player.weapon,
       player.aimMs ?? 0,
       true,
       player.bloom ?? 0,
+      player.characterId,
+      (player.jammedRemaining ?? 0) > 0,
     );
     const weapon = WEAPONS[player.weapon];
     const local = player.id === app.localPlayerId;
-    const color = local ? 0xf3c969 : 0xf05b3d;
+    const character = getCharacterDefinition(player.characterId);
+    const color = local ? 0xf3c969 : character?.color ?? 0xf05b3d;
     const range = aim.range;
     const halfSpread = aim.spread / 2;
     const map = getMapDefinition(this.currentMapId);
@@ -1818,7 +2482,10 @@ class ArenaScene extends Phaser.Scene {
 
   drawPlayer(graphics, player, now) {
     const local = player.id === app.localPlayerId;
-    const color = local ? 0x4b8eff : player.isBot ? 0xf05b3d : 0xe58b4f;
+    const character = getCharacterDefinition(player.characterId);
+    const color =
+      character?.color ??
+      (local ? 0x4b8eff : player.isBot ? 0xf05b3d : 0xe58b4f);
     const alpha = player.alive ? 1 : 0.28;
 
     graphics.fillStyle(0x020606, 0.5);
@@ -1906,6 +2573,21 @@ class ArenaScene extends Phaser.Scene {
       graphics.strokeCircle(px, py, PLAYER_RADIUS + 2);
       graphics.lineStyle(1, color, 0.88);
       graphics.strokeCircle(px, py, PLAYER_RADIUS + 5);
+      if (local) {
+        graphics.lineStyle(1, 0xf3c969, 0.82);
+        graphics.strokeCircle(px, py, PLAYER_RADIUS + 9);
+      }
+      if ((player.invulnerableRemaining ?? 0) > 0) {
+        const shieldPulse = reducedMotion
+          ? 0
+          : Math.sin(now * 0.012 + player.slot) * 2;
+        graphics.lineStyle(2, 0x9bc8ff, 0.9);
+        graphics.strokeCircle(px, py, PLAYER_RADIUS + 13 + shieldPulse);
+      }
+      if ((player.burningRemaining ?? 0) > 0) {
+        graphics.lineStyle(2, 0xf05b3d, 0.72);
+        graphics.strokeCircle(px, py, PLAYER_RADIUS + 17);
+      }
 
       const weaponLength =
         player.weapon === 'sniper' ? 36 : player.weapon === 'mg' ? 30 : 21;
@@ -2042,11 +2724,13 @@ class ArenaScene extends Phaser.Scene {
     const pointer = this.input.activePointer;
     const x = pointer.worldX;
     const y = pointer.worldY;
-    const aim = getAimStats(
+    const aim = getEffectiveAimStats(
       local.weapon,
       local.aimMs ?? 0,
       local.pointerDown,
       local.bloom ?? 0,
+      local.characterId,
+      (local.jammedRemaining ?? 0) > 0,
     );
     const radius = 7 + aim.spread * 22;
     graphics.lineStyle(1, 0xf3c969, 0.9);
@@ -2160,6 +2844,9 @@ class ArenaScene extends Phaser.Scene {
       if (
         effect.shooter &&
         effect.shooter !== app.localPlayerId &&
+        !['flash-burst', 'jam-wave', 'assassinate', 'shield'].includes(
+          effect.type,
+        ) &&
         !this.visiblePlayerIds?.has(effect.shooter)
       ) {
         effect.label?.setVisible(false);
@@ -2182,6 +2869,25 @@ class ArenaScene extends Phaser.Scene {
         graphics.lineBetween(effect.x - 9, effect.y, effect.x + 9, effect.y);
         graphics.lineBetween(effect.x, effect.y - 9, effect.x, effect.y + 9);
         graphics.strokeCircle(effect.x, effect.y, 7 + (1 - strength) * 10);
+      } else if (effect.type === 'flash-burst') {
+        const progress = 1 - remaining / 460;
+        graphics.fillStyle(0xffffff, Math.max(0, 1 - progress) * 0.42);
+        graphics.fillCircle(effect.x, effect.y, 18 + progress * 76);
+        graphics.lineStyle(2, 0xf3c969, 1 - progress);
+        graphics.strokeCircle(effect.x, effect.y, 18 + progress * 96);
+      } else if (effect.type === 'jam-wave') {
+        const progress = 1 - remaining / 720;
+        graphics.lineStyle(2, 0x73d6cf, (1 - progress) * 0.8);
+        graphics.strokeCircle(effect.x, effect.y, effect.radius * progress);
+      } else if (effect.type === 'assassinate') {
+        const strength = remaining / 900;
+        graphics.lineStyle(3, 0xf05b3d, strength);
+        graphics.strokeCircle(effect.x, effect.y, 18 + (1 - strength) * 24);
+        graphics.lineBetween(effect.x - 24, effect.y, effect.x + 24, effect.y);
+      } else if (effect.type === 'shield') {
+        const strength = remaining / 260;
+        graphics.lineStyle(2, 0x9bc8ff, strength);
+        graphics.strokeCircle(effect.x, effect.y, 22 + (1 - strength) * 12);
       }
     }
 
@@ -2321,6 +3027,23 @@ function wireUi() {
         }
         return;
       }
+      if (
+        combatInputActive &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        (event.code === 'KeyQ' ||
+          event.code === 'KeyE' ||
+          event.code === 'KeyX')
+      ) {
+        event.preventDefault();
+        if (!event.repeat) {
+          const until = performance.now() + 160;
+          if (event.code === 'KeyQ') app.skill1LatchUntil = until;
+          if (event.code === 'KeyE') app.skill2LatchUntil = until;
+          if (event.code === 'KeyX') app.assassinateLatchUntil = until;
+        }
+        return;
+      }
 
       const key = event.key.toLowerCase();
       const commandKey = event.ctrlKey || event.metaKey;
@@ -2378,17 +3101,36 @@ try {
 }
 setDifficulty(storedDifficulty, false);
 
+try {
+  app.selectedMatchMode =
+    MATCH_MODES[localStorage.getItem('aftershot-match-mode')]
+      ? localStorage.getItem('aftershot-match-mode')
+      : DEFAULT_MATCH_MODE;
+  app.selectedCharacterId = CHARACTERS[
+    localStorage.getItem('aftershot-character')
+  ]
+    ? localStorage.getItem('aftershot-character')
+    : DEFAULT_CHARACTER_ID;
+} catch {
+  app.selectedMatchMode = DEFAULT_MATCH_MODE;
+  app.selectedCharacterId = DEFAULT_CHARACTER_ID;
+}
+
 app.gameState = createPracticeSimulation(playerName(), {
   now: performance.now(),
   preview: true,
   reducedMotion,
   mapId: app.selectedMapId,
   difficulty: app.selectedDifficulty,
+  matchMode: app.selectedMatchMode,
+  characterId: app.selectedCharacterId,
 });
 setView('entry');
 setNetworkStatus('本地', 'online');
 wireUi();
 renderMapPickers();
+renderModePickers();
+renderCharacterPickers();
 chooseWeapon('pistol');
 updateHud(
   app.gameState.players.map((player) => ({
@@ -2423,9 +3165,12 @@ window.__AFTERSHOT__ = {
   app,
   beginLocalPractice,
   chooseWeapon,
+  requestReload,
   returnToEntry,
   beginHostMatch,
   beginClientMatch,
   createRoom,
   joinRoom,
+  selectMatchMode,
+  selectCharacter,
 };

@@ -25,3 +25,5 @@
 - 多地图不是换色卡：三张 `proof/map-*.png` 分别具有不同掩体轮廓、出生点和场景构件；成立。
 - 角色不是单纯色点：装甲躯干、护肩、背包、头盔视窗和当前武器轮廓在 `proof/multiplayer-guest-aim.png` 与 `proof/mg-suppression.png` 中可辨；成立。
 - 视野不是装饰暗角：`proof/visibility-occlusion.png` 中视锥、近身圈和攻击线均在炉芯前截断；成立。
+- 职业技能不是卡片式说明墙：HUD 只保留职业名、被动摘要和两枚可执行技能槽，倒计时与读条直接改变槽位状态；成立。
+- 全屏白屏、燃烧红框、泄露提示和脚步图案都编码真实玩法状态，没有装饰性使用；`proof/long-falcon-abilities.png`、`proof/long-ash-abilities.png`、`proof/long-agent46-abilities.png` 与 `proof/footstep-directions.png` 已验证。

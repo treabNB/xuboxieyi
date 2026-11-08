@@ -1,5 +1,10 @@
 import { DEFAULT_MAP_ID, getMapDefinition } from './maps.js';
 import { traceRay } from './vision.js';
+import {
+  CHARACTER_ORDER,
+  DEFAULT_CHARACTER_ID,
+  getCharacterDefinition,
+} from './characters.js';
 
 export const WORLD = {
   width: 1600,
@@ -12,6 +17,30 @@ export const PLAYER_RADIUS = 18;
 export const SCORE_LIMIT = 15;
 export const MATCH_SECONDS = 150;
 export const MG_MAX_BLOOM = 40;
+export const ASH_MG_FOCUS_MAX_BLOOM = 30;
+export const SPAWN_PROTECTION_MS = 2000;
+export const FOOTSTEP_RANGE = 400;
+export const FLASH_MAX_DISTANCE = 520;
+export const FLASH_RADIUS = 240;
+export const FLASH_FUSE_MS = 1500;
+export const FLASH_BLIND_MS = 3000;
+
+export const MATCH_MODES = {
+  quick: {
+    id: 'quick',
+    label: '快局',
+    durationSeconds: MATCH_SECONDS,
+    scoreLimit: SCORE_LIMIT,
+  },
+  long: {
+    id: 'long',
+    label: '长局',
+    durationSeconds: 480,
+    scoreLimit: null,
+  },
+};
+
+export const DEFAULT_MATCH_MODE = 'quick';
 
 export const DIFFICULTIES = {
   easy: {
@@ -165,19 +194,92 @@ export function getAimStats(
   };
 }
 
+export function isPlayerJammed(player, now) {
+  return (player.jammedUntil ?? 0) > now;
+}
+
+export function getEffectiveAimStats(
+  weaponId,
+  aimMs,
+  pointerDown,
+  bloomDegrees,
+  characterId,
+  jammed = false,
+) {
+  const canFocus =
+    !(characterId === 'ash' && weaponId === 'sniper');
+  const stats = getAimStats(
+    weaponId,
+    canFocus ? aimMs : 0,
+    pointerDown,
+    bloomDegrees,
+  );
+  return {
+    ...stats,
+    spread: stats.spread * (jammed ? 1.5 : 1),
+    canFocus,
+  };
+}
+
 function PhaserMathDegToRad(degrees) {
   return (degrees * Math.PI) / 180;
+}
+
+export function findAssassinationTarget(state, player, map, now) {
+  if (
+    !player?.alive ||
+    player.characterId !== 'agent46'
+  ) {
+    return null;
+  }
+  for (const target of state.players) {
+    if (target.id === player.id || !target.alive) {
+      continue;
+    }
+    const distance = Math.hypot(target.x - player.x, target.y - player.y);
+    if (distance > 58 || (target.invulnerableUntil ?? 0) > now) {
+      continue;
+    }
+    const angleToAttacker = Math.atan2(player.y - target.y, player.x - target.x);
+    const rearDelta = Math.abs(
+      normalizeAngle(angleToAttacker - target.angle - Math.PI),
+    );
+    if (rearDelta > Math.PI / 3) {
+      continue;
+    }
+    const angle = Math.atan2(target.y - player.y, target.x - player.x);
+    const ray = traceRay(player.x, player.y, angle, distance, map.obstacles, {
+      left: WORLD.padding,
+      right: WORLD.width - WORLD.padding,
+      top: WORLD.padding,
+      bottom: WORLD.playBottom,
+    });
+    if (ray.distance + PLAYER_RADIUS >= distance) {
+      return target;
+    }
+  }
+  return null;
+}
+
+export function canAssassinate(state, player, map, now) {
+  return Boolean(findAssassinationTarget(state, player, map, now));
 }
 
 export function makePlayer(id, name, slot, options = {}) {
   const map = getMapDefinition(options.mapId);
   const spawn = map.spawns[slot % map.spawns.length];
   const weapon = WEAPONS[options.weapon] ? options.weapon : 'pistol';
+  const characterId =
+    options.matchMode === 'long'
+      ? getCharacterDefinition(options.characterId)?.id ?? DEFAULT_CHARACTER_ID
+      : null;
+  const character = getCharacterDefinition(characterId);
   return {
     id,
     name: String(name || `玩家 ${slot + 1}`).slice(0, 12),
     slot,
     isBot: Boolean(options.isBot),
+    characterId,
     botDifficulty: DIFFICULTIES[options.difficulty]?.id ?? DEFAULT_DIFFICULTY,
     vx: 0,
     vy: 0,
@@ -202,7 +304,18 @@ export function makePlayer(id, name, slot, options = {}) {
     kills: 0,
     deaths: 0,
     score: 0,
+    damageDealt: 0,
     hitUntil: 0,
+    invulnerableUntil: 0,
+    flashedUntil: 0,
+    burningUntil: 0,
+    focusActive: false,
+    jamCastUntil: 0,
+    jammedUntil: 0,
+    reconUntil: 0,
+    skill1ReadyAt: 0,
+    skill2ReadyAt: 0,
+    skill1Uses: character?.skill1?.uses ?? null,
     mgBloom: 0,
     lastShotAt: 0,
     mgBloomClock: 0,
@@ -217,31 +330,44 @@ export function makePlayer(id, name, slot, options = {}) {
     botPointerDown: false,
     botWeaponStep: Math.max(0, BOT_WEAPONS.indexOf(weapon)),
     botWeaponDecisionAt: 0,
+    lastPressed: {
+      skill1: false,
+      skill2: false,
+      assassinate: false,
+    },
   };
 }
 
 export function createSimulation(roster, options = {}) {
   const mapId = getMapDefinition(options.mapId).id;
+  const matchMode =
+    MATCH_MODES[options.matchMode]?.id ?? DEFAULT_MATCH_MODE;
   const players = roster.map((entry, index) =>
     makePlayer(entry.id, entry.name, index, {
       isBot: entry.isBot,
       weapon: entry.weapon,
       difficulty: entry.difficulty,
       mapId,
+      matchMode,
+      characterId: entry.characterId,
     }),
   );
   const now = options.now ?? performance.now();
+  const mode = MATCH_MODES[matchMode];
   return {
     players,
     inputs: {},
+    flashbangs: [],
+    nextFlashbangId: 1,
     events: [],
     eventId: 1,
     status: 'playing',
     mapId,
+    matchMode,
     difficulty:
       DIFFICULTIES[options.difficulty]?.id ?? DEFAULT_DIFFICULTY,
     winner: null,
-    timeLeft: MATCH_SECONDS,
+    timeLeft: mode.durationSeconds,
     startedAt: now,
     endedAt: 0,
     preview: Boolean(options.preview),
@@ -253,17 +379,28 @@ export function createPracticeSimulation(playerName = '训练员', options = {})
   const now = options.now ?? performance.now();
   const difficulty =
     DIFFICULTIES[options.difficulty]?.id ?? DEFAULT_DIFFICULTY;
+  const matchMode =
+    MATCH_MODES[options.matchMode]?.id ?? DEFAULT_MATCH_MODE;
+  const characterId =
+    matchMode === 'long'
+      ? getCharacterDefinition(options.characterId)?.id ?? DEFAULT_CHARACTER_ID
+      : null;
+  const botCharacters =
+    matchMode === 'long'
+      ? CHARACTER_ORDER.filter((id) => id !== characterId).slice(0, 2)
+      : [null];
   const roster = [
-    { id: 'local', name: playerName },
-    {
-      id: 'bot-1',
-      name: BOT_NAMES[0],
+    { id: 'local', name: playerName, characterId },
+    ...botCharacters.map((botCharacterId, index) => ({
+      id: `bot-${index + 1}`,
+      name: BOT_NAMES[index],
       isBot: true,
-      weapon: 'sniper',
+      weapon: index === 0 ? 'sniper' : 'mg',
       difficulty,
-    },
+      characterId: botCharacterId,
+    })),
   ];
-  if (options.preview) {
+  if (options.preview && matchMode !== 'long') {
     roster.push({
       id: 'preview-2',
       name: '灰烬',
@@ -279,6 +416,7 @@ export function createPracticeSimulation(playerName = '训练员', options = {})
     preview: options.preview,
     mapId: options.mapId,
     difficulty,
+    matchMode,
   });
   if (options.preview) {
     const preview = getMapDefinition(state.mapId).preview;
@@ -296,22 +434,24 @@ export function createPracticeSimulation(playerName = '训练员', options = {})
     bot.aimStartedAt = now - 1120;
     bot.health = 72;
     const third = state.players[2];
-    third.x = preview.ally.x;
-    third.y = preview.ally.y;
-    third.angle = preview.ally.angle;
-    third.health = 38;
-    third.hitUntil = now + 1200;
-    state.timeLeft = 87;
+    if (third) {
+      third.x = preview.ally.x;
+      third.y = preview.ally.y;
+      third.angle = preview.ally.angle;
+      third.health = 38;
+      third.hitUntil = now + 1200;
+    }
+    state.timeLeft = matchMode === 'long' ? 384 : 87;
     state.players[0].score = 6;
     state.players[1].score = 4;
-    state.players[2].score = 2;
+    if (third) third.score = 2;
     state.events.push(
       {
         id: state.eventId++,
         type: 'hit',
         at: now - 90,
         shooter: local.id,
-        target: third.id,
+        target: third?.id ?? 'preview-old-2',
         damage: 26,
         weapon: 'pistol',
       },
@@ -341,6 +481,9 @@ export function setInput(state, playerId, input) {
     sprint: Boolean(input?.sprint),
     slide: Boolean(input?.slide),
     reload: Boolean(input?.reload),
+    skill1: Boolean(input?.skill1),
+    skill2: Boolean(input?.skill2),
+    assassinate: Boolean(input?.assassinate),
     targetX: Number(input?.targetX) || WORLD.width / 2,
     targetY: Number(input?.targetY) || WORLD.height / 2,
     weapon: WEAPONS[input?.weapon] ? input.weapon : 'pistol',
@@ -456,13 +599,20 @@ function pushEvent(state, event, now) {
   }
 }
 
-function awardKill(state, shooter, target, now) {
+function awardKill(state, shooter, target, now, weapon = shooter.weapon) {
   target.alive = false;
   target.health = 0;
   target.respawnAt = now + 3000;
   target.deaths += 1;
   target.pointerDown = false;
   target.aimStartedAt = 0;
+  target.focusActive = false;
+  target.jamCastUntil = 0;
+  target.burningUntil = 0;
+  target.flashedUntil = 0;
+  target.jammedUntil = 0;
+  target.reconUntil = 0;
+  target.invulnerableUntil = 0;
   shooter.kills += 1;
   shooter.score += 1;
   pushEvent(
@@ -473,11 +623,12 @@ function awardKill(state, shooter, target, now) {
       shooterName: shooter.name,
       target: target.id,
       targetName: target.name,
-      weapon: shooter.weapon,
+      weapon,
     },
     now,
   );
-  if (shooter.score >= SCORE_LIMIT) {
+  const scoreLimit = MATCH_MODES[state.matchMode]?.scoreLimit;
+  if (scoreLimit && shooter.score >= scoreLimit) {
     state.status = 'ended';
     state.winner = shooter.id;
     state.endedAt = now;
@@ -486,7 +637,10 @@ function awardKill(state, shooter, target, now) {
 
 function fireWeapon(state, player, now) {
   const weapon = WEAPONS[player.weapon];
-  const staminaCost = weapon.staminaCost ?? 0;
+  const staminaCost =
+    player.weapon === 'mg' && player.focusActive
+      ? 0
+      : weapon.staminaCost ?? 0;
   if (
     !player.alive ||
     player.reloadEnd > now ||
@@ -500,11 +654,14 @@ function fireWeapon(state, player, now) {
     return;
   }
 
-  const aim = getAimStats(
+  player.invulnerableUntil = 0;
+  const aim = getEffectiveAimStats(
     player.weapon,
     now - player.aimStartedAt,
     player.pointerDown,
     player.mgBloom,
+    player.characterId,
+    isPlayerJammed(player, now),
   );
   const spreadAngle = (Math.random() - 0.5) * aim.spread;
   const shotAngle = normalizeAngle(player.angle + spreadAngle);
@@ -535,16 +692,41 @@ function fireWeapon(state, player, now) {
   );
 
   if (target.hitPlayer) {
-    target.hitPlayer.health = Math.max(0, target.hitPlayer.health - aim.damage);
+    if ((target.hitPlayer.invulnerableUntil ?? 0) > now) {
+      pushEvent(
+        state,
+        {
+          type: 'shield',
+          shooter: player.id,
+          target: target.hitPlayer.id,
+          x: target.x,
+          y: target.y,
+        },
+        now,
+      );
+      return;
+    }
+    const burning =
+      player.characterId === 'ash' &&
+      player.weapon === 'mg' &&
+      player.burningUntil > now;
+    let damage = aim.damage * (burning ? 2 : 1);
+    if (target.hitPlayer.characterId === 'ash') {
+      damage = Math.max(1, Math.round(damage * 0.8));
+    }
+    const previousHealth = target.hitPlayer.health;
+    target.hitPlayer.health = Math.max(0, target.hitPlayer.health - damage);
     target.hitPlayer.hitUntil = now + 130;
+    player.damageDealt += previousHealth - target.hitPlayer.health;
     pushEvent(
       state,
       {
         type: 'hit',
         shooter: player.id,
         target: target.hitPlayer.id,
-        damage: aim.damage,
+        damage,
         weapon: player.weapon,
+        boosted: burning,
         x: target.x,
         y: target.y,
       },
@@ -573,7 +755,7 @@ function fireWeapon(state, player, now) {
   }
 }
 
-function respawnPlayer(player, map) {
+function respawnPlayer(player, map, now) {
   const spawn = map.spawns[player.slot % map.spawns.length];
   player.x = spawn.x;
   player.y = spawn.y;
@@ -585,6 +767,16 @@ function respawnPlayer(player, map) {
   player.reloadWeapon = null;
   player.pointerDown = false;
   player.aimStartedAt = 0;
+  player.invulnerableUntil = now + SPAWN_PROTECTION_MS;
+  player.flashedUntil = 0;
+  player.burningUntil = 0;
+  player.focusActive = false;
+  player.jamCastUntil = 0;
+  player.jammedUntil = 0;
+  player.reconUntil = 0;
+  player.lastPressed.skill1 = false;
+  player.lastPressed.skill2 = false;
+  player.lastPressed.assassinate = false;
   player.mgBloom = 0;
   player.lastShotAt = 0;
   player.mgBloomClock = 0;
@@ -625,6 +817,9 @@ function chooseBotWeapon(player, tuning, distance) {
     preferred =
       distance > 610 ? 'sniper' : distance < 250 ? 'pistol' : 'mg';
   }
+  if (player.characterId === 'ash' && preferred === 'sniper') {
+    preferred = distance > 430 ? 'pistol' : 'mg';
+  }
 
   if (canUse(preferred)) {
     return preferred;
@@ -637,6 +832,286 @@ function chooseBotWeapon(player, tuning, distance) {
         ? ['pistol', 'mg', 'sniper']
         : ['mg', 'pistol', 'sniper'];
   return fallbackOrder.find(canUse) ?? player.weapon;
+}
+
+function startFlashbang(state, player, now) {
+  if (
+    player.characterId !== 'falcon' ||
+    player.skill1Uses <= 0 ||
+    player.jamCastUntil > now
+  ) {
+    return false;
+  }
+  player.invulnerableUntil = 0;
+  player.skill1Uses -= 1;
+  const map = getMapDefinition(state.mapId);
+  const bounds = {
+    left: WORLD.padding,
+    right: WORLD.width - WORLD.padding,
+    top: WORLD.padding,
+    bottom: WORLD.playBottom,
+  };
+  const ray = traceRay(
+    player.x,
+    player.y,
+    player.angle,
+    FLASH_MAX_DISTANCE,
+    map.obstacles,
+    bounds,
+  );
+  state.flashbangs.push({
+    id: `flash-${state.nextFlashbangId++}`,
+    owner: player.id,
+    x: player.x,
+    y: player.y,
+    angle: player.angle,
+    remainingDistance: Math.max(0, ray.distance),
+    explodeAt: now + FLASH_FUSE_MS,
+    stopped: false,
+  });
+  pushEvent(
+    state,
+    {
+      type: 'flash-throw',
+      shooter: player.id,
+      shooterName: player.name,
+    },
+    now,
+  );
+  return true;
+}
+
+function detonateFlashbang(state, flashbang, now) {
+  const map = getMapDefinition(state.mapId);
+  const bounds = {
+    left: WORLD.padding,
+    right: WORLD.width - WORLD.padding,
+    top: WORLD.padding,
+    bottom: WORLD.playBottom,
+  };
+  pushEvent(
+    state,
+    {
+      type: 'flash-burst',
+      shooter: flashbang.owner,
+      x: flashbang.x,
+      y: flashbang.y,
+    },
+    now,
+  );
+  for (const target of state.players) {
+    if (target.id === flashbang.owner || !target.alive) {
+      continue;
+    }
+    const distance = Math.hypot(target.x - flashbang.x, target.y - flashbang.y);
+    if (distance > FLASH_RADIUS) {
+      continue;
+    }
+    const angle = Math.atan2(target.y - flashbang.y, target.x - flashbang.x);
+    const ray = traceRay(
+      flashbang.x,
+      flashbang.y,
+      angle,
+      distance,
+      map.obstacles,
+      bounds,
+    );
+    if (ray.distance + PLAYER_RADIUS < distance) {
+      continue;
+    }
+    target.flashedUntil = Math.max(
+      target.flashedUntil,
+      now + FLASH_BLIND_MS,
+    );
+    pushEvent(
+      state,
+      {
+        type: 'flashed',
+        shooter: flashbang.owner,
+        target: target.id,
+      },
+      now,
+    );
+  }
+}
+
+function updateFlashbangs(state, dt, now) {
+  for (const flashbang of state.flashbangs) {
+    if (now >= flashbang.explodeAt) {
+      detonateFlashbang(state, flashbang, now);
+      continue;
+    }
+    if (flashbang.stopped || flashbang.remainingDistance <= 0) {
+      continue;
+    }
+    const map = getMapDefinition(state.mapId);
+    const step = Math.min(
+      flashbang.remainingDistance,
+      640 * Math.min(dt, 0.05),
+    );
+    const ray = traceRay(
+      flashbang.x,
+      flashbang.y,
+      flashbang.angle,
+      step,
+      map.obstacles,
+      {
+        left: WORLD.padding,
+        right: WORLD.width - WORLD.padding,
+        top: WORLD.padding,
+        bottom: WORLD.playBottom,
+      },
+    );
+    flashbang.x = ray.x;
+    flashbang.y = ray.y;
+    flashbang.remainingDistance -= ray.distance;
+    if (ray.blocker !== 'range' || flashbang.remainingDistance <= 0.01) {
+      flashbang.stopped = true;
+      flashbang.remainingDistance = 0;
+    }
+  }
+  state.flashbangs = state.flashbangs.filter(
+    (flashbang) => now < flashbang.explodeAt,
+  );
+}
+
+function startJamCast(state, player, now) {
+  const character = getCharacterDefinition(player.characterId);
+  if (
+    player.characterId !== 'falcon' ||
+    player.skill2ReadyAt > now ||
+    player.jamCastUntil > now
+  ) {
+    return false;
+  }
+  player.invulnerableUntil = 0;
+  player.jamCastUntil = now + character.skill2.castMs;
+  player.skill2ReadyAt = now + character.skill2.cooldownMs;
+  pushEvent(
+    state,
+    {
+      type: 'jam-cast',
+      shooter: player.id,
+      duration: character.skill2.castMs,
+    },
+    now,
+  );
+  return true;
+}
+
+function releaseJamWave(state, player, now) {
+  const character = getCharacterDefinition(player.characterId);
+  for (const target of state.players) {
+    if (target.id === player.id || !target.alive) {
+      continue;
+    }
+    if (Math.hypot(target.x - player.x, target.y - player.y) <= 480) {
+      target.jammedUntil = Math.max(
+        target.jammedUntil,
+        now + character.skill2.durationMs,
+      );
+    }
+  }
+  pushEvent(
+    state,
+    {
+      type: 'jam-release',
+      shooter: player.id,
+      x: player.x,
+      y: player.y,
+    },
+    now,
+  );
+}
+
+function activateAshBurn(state, player, now) {
+  const character = getCharacterDefinition(player.characterId);
+  if (
+    player.characterId !== 'ash' ||
+    player.skill1ReadyAt > now ||
+    player.burningUntil > now
+  ) {
+    return false;
+  }
+  player.invulnerableUntil = 0;
+  player.burningUntil = now + character.skill1.durationMs;
+  player.skill1ReadyAt = now + character.skill1.cooldownMs;
+  pushEvent(
+    state,
+    { type: 'burn', shooter: player.id, duration: character.skill1.durationMs },
+    now,
+  );
+  return true;
+}
+
+function toggleAshFocus(state, player, now) {
+  if (player.characterId !== 'ash') {
+    return false;
+  }
+  if (!player.focusActive) {
+    if (player.stamina < 10) {
+      return false;
+    }
+    player.invulnerableUntil = 0;
+    player.focusActive = true;
+    pushEvent(state, { type: 'focus-on', shooter: player.id }, now);
+  } else {
+    player.focusActive = false;
+    pushEvent(state, { type: 'focus-off', shooter: player.id }, now);
+  }
+  return true;
+}
+
+function activateRecon(state, player, now) {
+  const character = getCharacterDefinition(player.characterId);
+  if (
+    player.characterId !== 'agent46' ||
+    player.skill1ReadyAt > now
+  ) {
+    return false;
+  }
+  player.invulnerableUntil = 0;
+  player.reconUntil = now + character.skill1.durationMs;
+  player.skill1ReadyAt = now + character.skill1.cooldownMs;
+  pushEvent(
+    state,
+    {
+      type: 'recon',
+      shooter: player.id,
+      shooterName: player.name,
+      duration: character.skill1.durationMs,
+    },
+    now,
+  );
+  return true;
+}
+
+function attemptAssassination(state, player, now) {
+  if (player.characterId !== 'agent46') {
+    return false;
+  }
+  const map = getMapDefinition(state.mapId);
+  const target = findAssassinationTarget(state, player, map, now);
+  if (!target) {
+    return false;
+  }
+  player.invulnerableUntil = 0;
+  pushEvent(
+    state,
+    {
+      type: 'assassinate',
+      shooter: player.id,
+      shooterName: player.name,
+      target: target.id,
+      targetName: target.name,
+      x: target.x,
+      y: target.y,
+      weapon: 'assassinate',
+    },
+    now,
+  );
+  awardKill(state, player, target, now, 'assassinate');
+  return true;
 }
 
 function driveBot(state, player, dt, now) {
@@ -713,6 +1188,38 @@ function driveBot(state, player, dt, now) {
     target.distance > 350 &&
     player.stamina > 25 &&
     !slide;
+  const abilityInterval =
+    tuning.id === 'hard' ? 1800 : tuning.id === 'normal' ? 2500 : 3400;
+  const abilityPulse = player.botClock % abilityInterval < 90;
+  const map = getMapDefinition(state.mapId);
+  const assassinationTarget =
+    player.characterId === 'agent46'
+      ? findAssassinationTarget(state, player, map, now, false)
+      : null;
+  let skill1 = false;
+  let skill2 = false;
+  if (abilityPulse) {
+    if (player.characterId === 'falcon') {
+      skill1 =
+        player.skill1Uses > 0 &&
+        target.distance <= FLASH_MAX_DISTANCE &&
+        target.distance >= 100;
+      skill2 =
+        target.distance <= 480 &&
+        target.distance >= 180 &&
+        player.skill2ReadyAt <= now;
+    } else if (player.characterId === 'ash') {
+      skill1 =
+        target.distance <= WEAPONS.mg.range &&
+        player.skill1ReadyAt <= now;
+      skill2 =
+        player.weapon === 'mg' &&
+        !player.focusActive &&
+        player.stamina > 20;
+    } else if (player.characterId === 'agent46') {
+      skill1 = player.skill1ReadyAt <= now;
+    }
+  }
 
   setInput(state, player.id, {
     ...keys,
@@ -722,6 +1229,9 @@ function driveBot(state, player, dt, now) {
     targetX: predictedX + Math.cos(angleToTarget + Math.PI / 2) * wobble * 500,
     targetY: predictedY + Math.sin(angleToTarget + Math.PI / 2) * wobble * 500,
     weapon: nextWeapon,
+    skill1,
+    skill2,
+    assassinate: Boolean(assassinationTarget),
   });
 }
 
@@ -731,7 +1241,7 @@ function updatePlayer(state, player, dt, now) {
     player.vx = 0;
     player.vy = 0;
     if (player.respawnAt > 0 && now >= player.respawnAt) {
-      respawnPlayer(player, map);
+      respawnPlayer(player, map, now);
     }
     return;
   }
@@ -759,12 +1269,22 @@ function updatePlayer(state, player, dt, now) {
     sprint: false,
     slide: false,
     reload: false,
+    skill1: false,
+    skill2: false,
+    assassinate: false,
     targetX: player.x + Math.cos(player.angle) * 100,
     targetY: player.y + Math.sin(player.angle) * 100,
     weapon: player.weapon,
   };
 
   player.lastInputAt = now;
+  const skill1Pressed = Boolean(input.skill1) && !player.lastPressed.skill1;
+  const skill2Pressed = Boolean(input.skill2) && !player.lastPressed.skill2;
+  const assassinatePressed =
+    Boolean(input.assassinate) && !player.lastPressed.assassinate;
+  player.lastPressed.skill1 = Boolean(input.skill1);
+  player.lastPressed.skill2 = Boolean(input.skill2);
+  player.lastPressed.assassinate = Boolean(input.assassinate);
   if (input.reload && player.ammo[player.weapon] < WEAPONS[player.weapon].magazine) {
     startReload(player, now);
   }
@@ -785,10 +1305,50 @@ function updatePlayer(state, player, dt, now) {
     Math.atan2(input.targetY - player.y, input.targetX - player.x),
   );
 
+  if (player.jamCastUntil > 0 && now >= player.jamCastUntil) {
+    releaseJamWave(state, player, now);
+    player.jamCastUntil = 0;
+  }
+  if (skill1Pressed) {
+    if (player.characterId === 'falcon') {
+      startFlashbang(state, player, now);
+    } else if (player.characterId === 'ash') {
+      activateAshBurn(state, player, now);
+    } else if (player.characterId === 'agent46') {
+      activateRecon(state, player, now);
+    }
+  }
+  if (skill2Pressed) {
+    if (player.characterId === 'falcon') {
+      startJamCast(state, player, now);
+    } else if (player.characterId === 'ash') {
+      toggleAshFocus(state, player, now);
+    }
+  }
+  if (assassinatePressed) {
+    attemptAssassination(state, player, now);
+  }
+  if (player.jamCastUntil > now) {
+    player.pointerDown = false;
+    player.aimStartedAt = 0;
+    player.vx = 0;
+    player.vy = 0;
+    player.sprinting = false;
+    return;
+  }
+
   const weapon = WEAPONS[player.weapon];
   const aimHeld = Boolean(input.pointerDown);
   const aimMs = player.aimStartedAt ? now - player.aimStartedAt : 0;
-  const aimCharge = clamp(aimMs / weapon.focusMs, 0, 1);
+  const effectiveAim = getEffectiveAimStats(
+    player.weapon,
+    aimMs,
+    player.pointerDown,
+    player.mgBloom,
+    player.characterId,
+    isPlayerJammed(player, now),
+  );
+  const aimCharge = effectiveAim.charge;
 
   let moveX = Number(input.right) - Number(input.left);
   let moveY = Number(input.down) - Number(input.up);
@@ -840,13 +1400,22 @@ function updatePlayer(state, player, dt, now) {
     player.sprinting = false;
     moveWithCollision(
       player,
-      player.slideDirX * STAMINA.slideSpeed * dt,
-      player.slideDirY * STAMINA.slideSpeed * dt,
+      player.slideDirX *
+        STAMINA.slideSpeed *
+        (player.characterId === 'falcon' ? 1.35 : 1) *
+        dt,
+      player.slideDirY *
+        STAMINA.slideSpeed *
+        (player.characterId === 'falcon' ? 1.35 : 1) *
+        dt,
       map.obstacles,
     );
   } else {
     const sprintScale = player.sprinting ? STAMINA.sprintMultiplier : 1;
-    const speed = 220 * aimScale * carryScale * agentScale * sprintScale;
+    const stealthSlow =
+      player.characterId === 'agent46' && !player.sprinting ? 0.75 : 1;
+    const speed =
+      220 * aimScale * carryScale * agentScale * sprintScale * stealthSlow;
     if (player.sprinting) {
       player.stamina = Math.max(
         0,
@@ -893,11 +1462,23 @@ function updatePlayer(state, player, dt, now) {
   ) {
     player.mgBloomClock += dt * 1000;
     while (player.mgBloomClock >= 100) {
-      player.mgBloom = Math.min(MG_MAX_BLOOM, player.mgBloom + 1);
+      const maxBloom = player.focusActive
+        ? ASH_MG_FOCUS_MAX_BLOOM
+        : MG_MAX_BLOOM;
+      const growth = player.focusActive ? 0.75 : 1;
+      player.mgBloom = Math.min(maxBloom, player.mgBloom + growth);
       player.mgBloomClock -= 100;
     }
   } else {
     player.mgBloomClock = 0;
+  }
+
+  if (player.focusActive) {
+    player.stamina = Math.max(0, player.stamina - 10 * dt);
+    player.lastStaminaUseAt = now;
+    if (player.stamina <= 0) {
+      player.focusActive = false;
+    }
   }
 
   if (
@@ -923,7 +1504,11 @@ export function updateSimulation(state, dt, now) {
     state.status = 'ended';
     state.endedAt = now;
     const ranking = [...state.players].sort(
-      (a, b) => b.score - a.score || b.kills - a.kills || a.deaths - b.deaths,
+      (a, b) =>
+        b.score - a.score ||
+        b.kills - a.kills ||
+        a.deaths - b.deaths ||
+        b.damageDealt - a.damageDealt,
     );
     state.winner = ranking[0]?.id ?? null;
     pushEvent(state, { type: 'match-end', winner: state.winner }, now);
@@ -931,10 +1516,25 @@ export function updateSimulation(state, dt, now) {
   }
 
   state.timeLeft = Math.max(0, state.timeLeft - dt);
+  if (state.timeLeft <= 0) {
+    state.status = 'ended';
+    state.endedAt = now;
+    const ranking = [...state.players].sort(
+      (a, b) =>
+        b.score - a.score ||
+        b.kills - a.kills ||
+        a.deaths - b.deaths ||
+        b.damageDealt - a.damageDealt,
+    );
+    state.winner = ranking[0]?.id ?? null;
+    pushEvent(state, { type: 'match-end', winner: state.winner }, now);
+    return state;
+  }
   const step = Math.min(dt, 0.05);
   for (const player of state.players) {
     updatePlayer(state, player, step, now);
   }
+  updateFlashbangs(state, step, now);
   state.events = state.events.filter((event) => now - event.at < 3500);
   return state;
 }
@@ -942,11 +1542,13 @@ export function updateSimulation(state, dt, now) {
 export function getPlayerAim(player, now) {
   const weapon = WEAPONS[player.weapon];
   const aimMs = player.pointerDown ? Math.max(0, now - player.aimStartedAt) : 0;
-  const stats = getAimStats(
+  const stats = getEffectiveAimStats(
     player.weapon,
     aimMs,
     player.pointerDown,
     player.mgBloom,
+    player.characterId,
+    isPlayerJammed(player, now),
   );
   return {
     ...stats,
@@ -957,10 +1559,12 @@ export function getPlayerAim(player, now) {
 }
 
 export function makeSnapshot(state, now) {
+  const map = getMapDefinition(state.mapId);
   return {
     at: Date.now(),
     status: state.status,
     mapId: state.mapId,
+    matchMode: state.matchMode,
     winner: state.winner,
     timeLeft: state.timeLeft,
     players: state.players.map((player) => ({
@@ -968,8 +1572,11 @@ export function makeSnapshot(state, now) {
       name: player.name,
       slot: player.slot,
       isBot: player.isBot,
+      characterId: player.characterId,
       x: Math.round(player.x * 10) / 10,
       y: Math.round(player.y * 10) / 10,
+      vx: Math.round(player.vx),
+      vy: Math.round(player.vy),
       angle: player.angle,
       weapon: player.weapon,
       ammo: player.ammo[player.weapon],
@@ -978,6 +1585,7 @@ export function makeSnapshot(state, now) {
       kills: player.kills,
       deaths: player.deaths,
       score: player.score,
+      damageDealt: Math.round(player.damageDealt * 10) / 10,
       stamina: Math.round(player.stamina * 10) / 10,
       sprinting: player.sprinting,
       sliding: now < player.slideUntil,
@@ -986,6 +1594,17 @@ export function makeSnapshot(state, now) {
       slideCooldownRemaining: Math.max(0, player.slideCooldownEnd - now),
       hitUntil: Math.max(0, player.hitUntil - now),
       respawnRemaining: Math.max(0, player.respawnAt - now),
+      invulnerableRemaining: Math.max(0, player.invulnerableUntil - now),
+      flashedRemaining: Math.max(0, player.flashedUntil - now),
+      burningRemaining: Math.max(0, player.burningUntil - now),
+      focusActive: Boolean(player.focusActive),
+      jamCastRemaining: Math.max(0, player.jamCastUntil - now),
+      jammedRemaining: Math.max(0, player.jammedUntil - now),
+      reconRemaining: Math.max(0, player.reconUntil - now),
+      skill1ReadyRemaining: Math.max(0, player.skill1ReadyAt - now),
+      skill2ReadyRemaining: Math.max(0, player.skill2ReadyAt - now),
+      skill1Uses: player.skill1Uses,
+      assassinationReady: canAssassinate(state, player, map, now),
       aimMs:
         player.pointerDown && player.aimStartedAt
           ? Math.max(0, now - player.aimStartedAt)
@@ -996,6 +1615,13 @@ export function makeSnapshot(state, now) {
       reloadTotal: player.reloadWeapon
         ? WEAPONS[player.reloadWeapon].reloadMs
         : 0,
+    })),
+    flashbangs: state.flashbangs.map((flashbang) => ({
+      id: flashbang.id,
+      owner: flashbang.owner,
+      x: Math.round(flashbang.x * 10) / 10,
+      y: Math.round(flashbang.y * 10) / 10,
+      explodeRemaining: Math.max(0, flashbang.explodeAt - now),
     })),
     events: state.events
       .filter((event) => now - event.at < 300)

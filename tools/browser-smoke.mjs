@@ -297,6 +297,29 @@ async function main() {
     `window.__AFTERSHOT__.app.selectedMapId === 'foundry' && window.__AFTERSHOT__.app.scene.currentMapId === 'foundry'`,
   );
   await new Promise((resolve) => setTimeout(resolve, 160));
+  await clickSelector('#entry-mode-picker [data-match-mode="long"]');
+  await waitFor(
+    `window.__AFTERSHOT__.app.selectedMatchMode === 'long' &&
+      !document.querySelector('#entry-character-select').classList.contains('is-hidden') &&
+      window.__AFTERSHOT__.app.gameState.players.length === 3`,
+  );
+  const characterStates = [];
+  for (const characterId of ['falcon', 'ash', 'agent46']) {
+    await clickSelector(
+      `#entry-character-picker [data-character="${characterId}"]`,
+    );
+    await waitFor(
+      `window.__AFTERSHOT__.app.selectedCharacterId === ${JSON.stringify(characterId)} &&
+        window.__AFTERSHOT__.app.gameState.players[0].characterId === ${JSON.stringify(characterId)}`,
+    );
+    characterStates.push(characterId);
+  }
+  await captureScreenshot(path.join('proof', 'long-mode-entry.png'));
+  await clickSelector('#entry-mode-picker [data-match-mode="quick"]');
+  await waitFor(
+    `window.__AFTERSHOT__.app.selectedMatchMode === 'quick' &&
+      document.querySelector('#entry-character-select').classList.contains('is-hidden')`,
+  );
   await evaluate(`(() => {
     const app = window.__AFTERSHOT__.app;
     const fourth = structuredClone(app.gameState.players[1]);
@@ -943,7 +966,7 @@ async function main() {
     );
   }
 
-  await pressKey('r', 'KeyR', 82);
+  await evaluate(`window.__AFTERSHOT__.requestReload()`);
   await waitFor(
     `(() => {
       const app = window.__AFTERSHOT__.app;
@@ -1111,6 +1134,338 @@ async function main() {
     clickCount: 1,
   });
 
+  await evaluate(`window.__AFTERSHOT__.returnToEntry()`);
+  await waitFor(`window.__AFTERSHOT__.app.view === 'entry'`);
+  await evaluate(`(() => {
+    window.__AFTERSHOT__.selectMatchMode('long');
+    window.__AFTERSHOT__.selectCharacter('falcon');
+  })()`);
+  await clickSelector('#practice-button');
+  await waitFor(
+    `window.__AFTERSHOT__.app.view === 'game' &&
+      window.__AFTERSHOT__.app.gameState.matchMode === 'long' &&
+      window.__AFTERSHOT__.app.gameState.players.length === 3`,
+  );
+  await waitFor(
+    `!document.querySelector('#ability-hud').classList.contains('is-hidden')`,
+  );
+  const longFalcon = await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    return {
+      matchMode: app.gameState.matchMode,
+      timeLeft: app.gameState.timeLeft,
+      characterId: local.characterId,
+      skill1: document.querySelector('#skill1-name').textContent,
+      skill2: document.querySelector('#skill2-name').textContent,
+      roles: app.gameState.players.map((player) => player.characterId),
+    };
+  })()`);
+  if (
+    longFalcon.matchMode !== 'long' ||
+    longFalcon.timeLeft < 478 ||
+    longFalcon.characterId !== 'falcon' ||
+    longFalcon.skill1 !== '战术闪光弹' ||
+    longFalcon.skill2 !== '战术干扰波'
+  ) {
+    throw new Error(`Long Falcon setup invalid: ${JSON.stringify(longFalcon)}`);
+  }
+
+  const footstepFeedback = await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const scene = app.scene;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    const source = {
+      ...local,
+      id: 'sound-source',
+      characterId: 'ash',
+      x: local.x + 180,
+      y: local.y,
+      vx: 120,
+      vy: 0,
+      alive: true,
+      sprinting: false,
+    };
+    scene.drawFootsteps([source], local, performance.now());
+    const walking = { ...scene.footstepSources[0] };
+    source.sprinting = true;
+    scene.drawFootsteps([source], local, performance.now());
+    const sprinting = { ...scene.footstepSources[0] };
+    source.characterId = 'agent46';
+    source.sprinting = false;
+    scene.drawFootsteps([source], local, performance.now());
+    return {
+      walking,
+      sprinting,
+      stealthSources: scene.footstepSources.length,
+    };
+  })()`);
+  if (
+    footstepFeedback.walking.color !== 'amber' ||
+    footstepFeedback.sprinting.color !== 'red' ||
+    footstepFeedback.sprinting.size <= 0 ||
+    footstepFeedback.stealthSources !== 0
+  ) {
+    throw new Error(
+      `Footstep feedback invalid: ${JSON.stringify(footstepFeedback)}`,
+    );
+  }
+  await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    const bot = app.gameState.players.find((player) => player.isBot);
+    bot.isBot = false;
+    bot.alive = true;
+    bot.health = 100;
+    bot.x = local.x + 180;
+    bot.y = local.y;
+    app.__testTargetId = bot.id;
+    app.gameState.inputs[bot.id] = {
+      up: true,
+      down: false,
+      left: false,
+      right: false,
+      pointerDown: false,
+      cancel: false,
+      sprint: false,
+      slide: false,
+      reload: false,
+      skill1: false,
+      skill2: false,
+      assassinate: false,
+      targetX: bot.x,
+      targetY: bot.y - 100,
+      weapon: bot.weapon,
+    };
+  })()`);
+  await new Promise((resolve) => setTimeout(resolve, 260));
+  await captureScreenshot(path.join('proof', 'footstep-directions.png'));
+  await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const input = app.gameState.inputs[app.__testTargetId];
+    if (input) {
+      input.up = false;
+      input.targetX = app.gameState.players.find((player) => player.id === app.__testTargetId).x;
+      input.targetY = app.gameState.players.find((player) => player.id === app.__testTargetId).y;
+    }
+  })()`);
+
+  await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    const bot = app.gameState.players.find((player) => player.id === app.__testTargetId);
+    local.angle = 0;
+    bot.isBot = false;
+    bot.alive = true;
+    bot.health = 100;
+    bot.respawnAt = 0;
+    bot.x = local.x + 100;
+    bot.y = local.y;
+    bot.angle = Math.PI;
+  })()`);
+  await pressKey('q', 'KeyQ', 81);
+  await waitFor(
+    `window.__AFTERSHOT__.app.gameState.players.find((player) => player.id === window.__AFTERSHOT__.app.localPlayerId).skill1Uses === 2`,
+  );
+  await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const bot = app.gameState.players.find((player) => player.id === app.__testTargetId);
+    app.gameState.flashbangs[0].x = bot.x;
+    app.gameState.flashbangs[0].y = bot.y;
+    app.gameState.flashbangs[0].stopped = true;
+    app.gameState.flashbangs[0].explodeAt = performance.now() + 20;
+  })()`);
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  const flashState = await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const bot = app.gameState.players.find((player) => player.id === app.__testTargetId);
+    return {
+      flashed: bot.flashedUntil > performance.now(),
+      remainingUses: app.gameState.players.find((player) => player.id === app.localPlayerId).skill1Uses,
+    };
+  })()`);
+  if (!flashState.flashed || flashState.remainingUses !== 2) {
+    throw new Error(`Flash grenade invalid: ${JSON.stringify(flashState)}`);
+  }
+  await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    local.flashedUntil = performance.now() + 2200;
+  })()`);
+  await waitFor(
+    `!document.querySelector('#flash-overlay').classList.contains('is-hidden')`,
+  );
+  const flashOverlayOpacity = await evaluate(
+    `Number(document.querySelector('#flash-overlay').style.opacity)`,
+  );
+  if (flashOverlayOpacity < 0.9) {
+    throw new Error(`Flash overlay too weak: ${flashOverlayOpacity}`);
+  }
+  await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    local.flashedUntil = 0;
+  })()`);
+
+  await pressKey('e', 'KeyE', 69);
+  await waitFor(
+    `window.__AFTERSHOT__.app.gameState.players.find((player) => player.id === window.__AFTERSHOT__.app.localPlayerId).jamCastUntil > performance.now()`,
+  );
+  await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    local.jamCastUntil = performance.now() + 10;
+  })()`);
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  const jamState = await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const bot = app.gameState.players.find((player) => player.id === app.__testTargetId);
+    return {
+      jammed: bot.jammedUntil > performance.now(),
+      cooldown: app.gameState.players.find((player) => player.id === app.localPlayerId).skill2ReadyAt > performance.now(),
+    };
+  })()`);
+  if (!jamState.jammed || !jamState.cooldown) {
+    throw new Error(`Jam wave invalid: ${JSON.stringify(jamState)}`);
+  }
+  await captureScreenshot(path.join('proof', 'long-falcon-abilities.png'));
+
+  await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    local.alive = false;
+    local.health = 0;
+    local.respawnAt = performance.now();
+  })()`);
+  await waitFor(
+    `window.__AFTERSHOT__.app.gameState.players.find((player) => player.id === window.__AFTERSHOT__.app.localPlayerId).invulnerableUntil > performance.now() + 1700`,
+  );
+  const respawnProtection = await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    return local.invulnerableUntil - performance.now();
+  })()`);
+
+  await evaluate(`window.__AFTERSHOT__.returnToEntry()`);
+  await waitFor(`window.__AFTERSHOT__.app.view === 'entry'`);
+  await evaluate(`(() => {
+    window.__AFTERSHOT__.selectMatchMode('long');
+    window.__AFTERSHOT__.selectCharacter('ash');
+  })()`);
+  await clickSelector('#practice-button');
+  await waitFor(
+    `window.__AFTERSHOT__.app.view === 'game' &&
+      window.__AFTERSHOT__.app.gameState.matchMode === 'long' &&
+      window.__AFTERSHOT__.app.gameState.players.find((player) => player.id === window.__AFTERSHOT__.app.localPlayerId)?.characterId === 'ash'`,
+  );
+  await waitFor(
+    `!document.querySelector('#ability-hud').classList.contains('is-hidden')`,
+  );
+  await pressKey('q', 'KeyQ', 81);
+  await waitFor(
+    `!document.querySelector('#burn-overlay').classList.contains('is-hidden')`,
+  );
+  await pressKey('e', 'KeyE', 69);
+  await waitFor(
+    `window.__AFTERSHOT__.app.gameState.players.find((player) => player.id === window.__AFTERSHOT__.app.localPlayerId).focusActive === true`,
+  );
+  const ashState = await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    return {
+      burning: local.burningUntil > performance.now(),
+      focus: local.focusActive,
+      burnOverlay: !document.querySelector('#burn-overlay').classList.contains('is-hidden'),
+    };
+  })()`);
+  if (!ashState.burning || !ashState.focus || !ashState.burnOverlay) {
+    throw new Error(`Ash abilities invalid: ${JSON.stringify(ashState)}`);
+  }
+  await captureScreenshot(path.join('proof', 'long-ash-abilities.png'));
+
+  await evaluate(`window.__AFTERSHOT__.returnToEntry()`);
+  await waitFor(`window.__AFTERSHOT__.app.view === 'entry'`);
+  await evaluate(`(() => {
+    window.__AFTERSHOT__.selectMatchMode('long');
+    window.__AFTERSHOT__.selectCharacter('agent46');
+  })()`);
+  await clickSelector('#practice-button');
+  await waitFor(
+    `window.__AFTERSHOT__.app.view === 'game' &&
+      window.__AFTERSHOT__.app.gameState.matchMode === 'long' &&
+      window.__AFTERSHOT__.app.gameState.players.find((player) => player.id === window.__AFTERSHOT__.app.localPlayerId)?.characterId === 'agent46'`,
+  );
+  await waitFor(
+    `!document.querySelector('#ability-hud').classList.contains('is-hidden') &&
+      document.querySelector('#skill2-key').textContent === 'X'`,
+  );
+  await pressKey('q', 'KeyQ', 81);
+  await waitFor(
+    `window.__AFTERSHOT__.app.gameState.players.find((player) => player.id === window.__AFTERSHOT__.app.localPlayerId).reconUntil > performance.now()`,
+  );
+  const reconState = await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    const bot = app.gameState.players.find((player) => player.isBot);
+    bot.isBot = false;
+    bot.alive = true;
+    bot.health = 100;
+    bot.x = local.x - 100;
+    bot.y = local.y;
+    bot.angle = 0;
+    app.__testTargetId = bot.id;
+    local.reconRemaining = local.reconUntil - performance.now();
+    app.scene.visiblePlayerIds = new Set(
+      [...(app.scene.visiblePlayerIds ?? [])].filter((id) => id !== bot.id),
+    );
+    app.scene.drawReconOutline(app.gameState.players, local);
+    return {
+      reconIds: [...(app.scene.reconIds ?? [])],
+      reconRemaining: local.reconUntil - performance.now(),
+      skill2Key: document.querySelector('#skill2-key').textContent,
+    };
+  })()`);
+  if (
+    !reconState.reconIds.includes(
+      await evaluate(`window.__AFTERSHOT__.app.__testTargetId`),
+    ) ||
+    reconState.reconRemaining <= 0 ||
+    reconState.skill2Key !== 'X'
+  ) {
+    throw new Error(`Agent recon invalid: ${JSON.stringify(reconState)}`);
+  }
+  await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    const bot = app.gameState.players.find((player) => player.id === app.__testTargetId);
+    bot.x = local.x - 40;
+    bot.y = local.y;
+    bot.angle = Math.PI;
+    bot.invulnerableUntil = 0;
+    local.angle = Math.PI;
+    window.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'x',
+      code: 'KeyX',
+      bubbles: true,
+      cancelable: true,
+    }));
+  })()`);
+  await waitFor(
+    `window.__AFTERSHOT__.app.gameState.players.find((player) => player.id === window.__AFTERSHOT__.app.__testTargetId).alive === false`,
+  );
+  const agentState = await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    return {
+      score: local.score,
+      assassinationEvent: app.gameState.events.some((event) => event.type === 'assassinate'),
+    };
+  })()`);
+  if (!agentState.assassinationEvent || agentState.score < 1) {
+    throw new Error(`Agent assassination invalid: ${JSON.stringify(agentState)}`);
+  }
+  await captureScreenshot(path.join('proof', 'long-agent46-abilities.png'));
+
   if (consoleErrors.length) {
     throw new Error(`Browser errors: ${consoleErrors.join(' | ')}`);
   }
@@ -1123,6 +1478,7 @@ async function main() {
     battlePerformance,
     fogVisibilityPixels,
         mapStates,
+    characterStates,
         immersiveState,
         ctrlWBlocked,
         pauseState: {
@@ -1151,6 +1507,16 @@ async function main() {
     weaponSelection,
     wheelWeapons,
     botWeaponSwitch,
+    longMode: {
+      falcon: longFalcon,
+      footstepFeedback,
+      flashState,
+      jamState,
+      respawnProtection,
+      ashState,
+      reconState,
+      agentState,
+    },
         visibilityScreenshot: 'proof/visibility-occlusion.png',
     ui,
     consoleErrors,

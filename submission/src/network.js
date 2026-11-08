@@ -1,6 +1,8 @@
 const HOST_PREFIX = 'aftershot-v1-';
 const MAX_PLAYERS = 4;
 const ROOM_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const CHARACTER_IDS = new Set(['falcon', 'ash', 'agent46']);
+const MATCH_MODE_IDS = new Set(['quick', 'long']);
 
 function randomRoomCode(length = 6) {
   let code = '';
@@ -25,6 +27,14 @@ function normalizeRoomCode(code) {
     .slice(0, 6);
 }
 
+function normalizeCharacter(characterId) {
+  return CHARACTER_IDS.has(characterId) ? characterId : 'falcon';
+}
+
+function normalizeMatchMode(matchMode) {
+  return MATCH_MODE_IDS.has(matchMode) ? matchMode : 'quick';
+}
+
 export class NetworkSession {
   constructor(handlers = {}) {
     this.handlers = handlers;
@@ -37,6 +47,7 @@ export class NetworkSession {
     this.roster = new Map();
     this.matchActive = false;
     this.selectedMapId = 'foundry';
+    this.selectedMatchMode = 'quick';
     this.closed = false;
     this.pingTimer = null;
   }
@@ -45,7 +56,7 @@ export class NetworkSession {
     return typeof window.Peer === 'function';
   }
 
-  async createRoom(name) {
+  async createRoom(name, characterId = 'falcon', matchMode = 'quick') {
     if (!this.available) {
       throw new Error('联机组件没有载入。');
     }
@@ -54,8 +65,18 @@ export class NetworkSession {
     this.role = 'host';
     this.localPlayerId = 'host';
     this.matchActive = false;
+    this.selectedMatchMode = normalizeMatchMode(matchMode);
     this.roster = new Map([
-      ['host', { id: 'host', name: sanitizeName(name), isHost: true, connected: true }],
+      [
+        'host',
+        {
+          id: 'host',
+          name: sanitizeName(name),
+          isHost: true,
+          connected: true,
+          characterId: normalizeCharacter(characterId),
+        },
+      ],
     ]);
 
     let attempts = 0;
@@ -64,7 +85,11 @@ export class NetworkSession {
       this.roomCode = randomRoomCode();
       try {
         await this.#openHostPeer();
-        this.handlers.onLobby?.(this.getRoster(), this.roomCode);
+        this.handlers.onLobby?.(
+          this.getRoster(),
+          this.roomCode,
+          this.selectedMatchMode,
+        );
         this.handlers.onStatus?.('房间在线', 'online');
         return this.roomCode;
       } catch (error) {
@@ -79,7 +104,7 @@ export class NetworkSession {
     throw new Error('无法建立房间，请稍后重试。');
   }
 
-  async joinRoom(code, name) {
+  async joinRoom(code, name, characterId = 'falcon') {
     if (!this.available) {
       throw new Error('联机组件没有载入。');
     }
@@ -121,6 +146,7 @@ export class NetworkSession {
           this.hostConnection.send({
             type: 'join',
             name: sanitizeName(name),
+            characterId: normalizeCharacter(characterId),
           });
         });
 
@@ -172,13 +198,14 @@ export class NetworkSession {
     return this.role === 'host' && this.roster.size >= 2;
   }
 
-  startMatch(roster, mapId = this.selectedMapId) {
+  startMatch(roster, mapId = this.selectedMapId, matchMode = this.selectedMatchMode) {
     if (this.role !== 'host') {
       return;
     }
     this.matchActive = true;
     this.selectedMapId = mapId;
-    this.#broadcast({ type: 'start', roster, mapId });
+    this.selectedMatchMode = normalizeMatchMode(matchMode);
+    this.#broadcast({ type: 'start', roster, mapId, matchMode: this.selectedMatchMode });
   }
 
   selectMap(mapId) {
@@ -187,6 +214,40 @@ export class NetworkSession {
     }
     this.selectedMapId = mapId;
     this.#broadcast({ type: 'map', mapId });
+  }
+
+  selectMatchMode(matchMode) {
+    if (this.role !== 'host') {
+      return;
+    }
+    this.selectedMatchMode = normalizeMatchMode(matchMode);
+    this.#broadcast({
+      type: 'mode',
+      matchMode: this.selectedMatchMode,
+    });
+    this.#broadcastLobby();
+  }
+
+  selectCharacter(characterId) {
+    const normalized = normalizeCharacter(characterId);
+    const player = this.roster.get(this.localPlayerId);
+    if (!player) {
+      return;
+    }
+    player.characterId = normalized;
+    if (this.role === 'host') {
+      this.#broadcastLobby();
+      this.handlers.onLobby?.(
+        this.getRoster(),
+        this.roomCode,
+        this.selectedMatchMode,
+      );
+    } else if (this.role === 'client' && this.hostConnection?.open) {
+      this.hostConnection.send({
+        type: 'character',
+        characterId: normalized,
+      });
+    }
   }
 
   sendInput(input) {
@@ -326,6 +387,7 @@ export class NetworkSession {
           name: sanitizeName(message.name),
           isHost: false,
           connected: true,
+          characterId: normalizeCharacter(message.characterId),
         });
         connection.send({
           type: 'welcome',
@@ -333,14 +395,32 @@ export class NetworkSession {
           roomCode: this.roomCode,
           roster: this.getRoster(),
           mapId: this.selectedMapId,
+          matchMode: this.selectedMatchMode,
         });
         this.#broadcastLobby();
-        this.handlers.onLobby?.(this.getRoster(), this.roomCode);
+        this.handlers.onLobby?.(
+          this.getRoster(),
+          this.roomCode,
+          this.selectedMatchMode,
+        );
         this.handlers.onStatus?.(`${this.roster.size} 人房间`, 'online');
         return;
       }
       if (message.type === 'input' && playerId && this.matchActive) {
         this.handlers.onRemoteInput?.(playerId, message.input);
+        return;
+      }
+      if (message.type === 'character' && playerId) {
+        const player = this.roster.get(playerId);
+        if (player) {
+          player.characterId = normalizeCharacter(message.characterId);
+          this.#broadcastLobby();
+          this.handlers.onLobby?.(
+            this.getRoster(),
+            this.roomCode,
+            this.selectedMatchMode,
+          );
+        }
         return;
       }
       if (message.type === 'ping') {
@@ -355,7 +435,11 @@ export class NetworkSession {
       }
       this.roster.delete(playerId);
       this.#broadcastLobby();
-      this.handlers.onLobby?.(this.getRoster(), this.roomCode);
+      this.handlers.onLobby?.(
+        this.getRoster(),
+        this.roomCode,
+        this.selectedMatchMode,
+      );
       this.handlers.onPlayerLeft?.(playerId);
       if (this.roster.size === 0) {
         this.handlers.onStatus?.('等待连接', 'pending');
@@ -375,7 +459,12 @@ export class NetworkSession {
       this.roster = new Map(
         (message.roster ?? []).map((player) => [player.id, player]),
       );
-      this.handlers.onLobby?.(this.getRoster(), message.roomCode);
+      this.selectedMatchMode = normalizeMatchMode(message.matchMode);
+      this.handlers.onLobby?.(
+        this.getRoster(),
+        message.roomCode,
+        this.selectedMatchMode,
+      );
       this.handlers.onMapChange?.(this.selectedMapId);
       this.handlers.onStatus?.('房间已连接', 'online');
       return;
@@ -383,10 +472,17 @@ export class NetworkSession {
     if (message.type === 'lobby') {
       this.matchActive = false;
       this.selectedMapId = message.mapId || this.selectedMapId;
+      this.selectedMatchMode = normalizeMatchMode(
+        message.matchMode || this.selectedMatchMode,
+      );
       this.roster = new Map(
         (message.roster ?? []).map((player) => [player.id, player]),
       );
-      this.handlers.onLobby?.(this.getRoster(), this.roomCode);
+      this.handlers.onLobby?.(
+        this.getRoster(),
+        this.roomCode,
+        this.selectedMatchMode,
+      );
       this.handlers.onMapChange?.(this.selectedMapId);
       return;
     }
@@ -395,13 +491,25 @@ export class NetworkSession {
       this.handlers.onMapChange?.(this.selectedMapId);
       return;
     }
+    if (message.type === 'mode') {
+      this.selectedMatchMode = normalizeMatchMode(message.matchMode);
+      this.handlers.onModeChange?.(this.selectedMatchMode);
+      this.handlers.onLobby?.(
+        this.getRoster(),
+        this.roomCode,
+        this.selectedMatchMode,
+      );
+      return;
+    }
     if (message.type === 'start') {
       this.matchActive = true;
       this.selectedMapId = message.mapId || this.selectedMapId;
+      this.selectedMatchMode = normalizeMatchMode(message.matchMode);
       this.handlers.onMatchStart?.(
         message.roster,
         this.localPlayerId,
         this.selectedMapId,
+        this.selectedMatchMode,
       );
       return;
     }
@@ -424,6 +532,7 @@ export class NetworkSession {
       type: 'lobby',
       roster: this.getRoster(),
       mapId: this.selectedMapId,
+      matchMode: this.selectedMatchMode,
     });
   }
 
