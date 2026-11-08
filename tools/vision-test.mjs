@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   buildVisibilityPolygon,
+  getVisionProfile,
   isPointInVision,
   traceRay,
   VISION,
@@ -33,6 +34,16 @@ assert.equal(isPointInVision(200, 300, 0, 450, 300), true);
 assert.equal(isPointInVision(200, 300, 0, 100, 300), false);
 assert.equal(isPointInVision(200, 300, 0, 900, 300), false);
 
+const baseVision = getVisionProfile(false, 1);
+const partialVision = getVisionProfile(true, 0.5);
+const scopedVision = getVisionProfile(true, 1);
+assert.equal(baseVision.halfAngle, VISION.halfAngle);
+assert.equal(baseVision.range, VISION.range);
+assert.ok(scopedVision.halfAngle < partialVision.halfAngle);
+assert.ok(partialVision.halfAngle < baseVision.halfAngle);
+assert.ok(scopedVision.range > partialVision.range);
+assert.ok(partialVision.range > baseVision.range);
+
 console.log(
   JSON.stringify(
     {
@@ -42,6 +53,12 @@ console.log(
       polygonPoints: polygon.length,
       visionRange: VISION.range,
       fieldOfViewDegrees: Math.round((VISION.halfAngle * 2 * 180) / Math.PI),
+      sniperAimVision: {
+        fieldOfViewDegrees: Math.round(
+          (scopedVision.halfAngle * 2 * 180) / Math.PI,
+        ),
+        range: scopedVision.range,
+      },
     },
     null,
     2,

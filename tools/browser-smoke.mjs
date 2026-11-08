@@ -672,6 +672,10 @@ async function main() {
   }
 
   await pressKey('2', 'Digit2', 50);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const baseVision = await evaluate(
+    `window.__AFTERSHOT__.app.scene.activeVisionProfile`,
+  );
   await send('Input.dispatchMouseEvent', {
     type: 'mouseMoved',
     x: 1080,
@@ -689,10 +693,18 @@ async function main() {
   const earlySniperSpread = await evaluate(
     `parseFloat(document.querySelector('#spread-value').textContent)`,
   );
+  const earlySniperVision = await evaluate(`(() => ({
+    ...window.__AFTERSHOT__.app.scene.activeVisionProfile,
+    hud: document.querySelector('#vision-readout').textContent,
+  }))()`);
   await new Promise((resolve) => setTimeout(resolve, 1250));
   const lateSniperSpread = await evaluate(
     `parseFloat(document.querySelector('#spread-value').textContent)`,
   );
+  const lateSniperVision = await evaluate(`(() => ({
+    ...window.__AFTERSHOT__.app.scene.activeVisionProfile,
+    hud: document.querySelector('#vision-readout').textContent,
+  }))()`);
   await captureScreenshot(path.join('proof', 'sniper-aim.png'));
   await send('Input.dispatchMouseEvent', {
     type: 'mouseReleased',
@@ -719,6 +731,21 @@ async function main() {
   if (!(earlySniperSpread > 8 && lateSniperSpread < 2)) {
     throw new Error(
       `Sniper bloom did not tighten: ${earlySniperSpread} -> ${lateSniperSpread}`,
+    );
+  }
+  if (
+    !baseVision ||
+    !(earlySniperVision.halfAngle < baseVision.halfAngle) ||
+    !(lateSniperVision.halfAngle < earlySniperVision.halfAngle) ||
+    !(earlySniperVision.range > baseVision.range) ||
+    !(lateSniperVision.range > earlySniperVision.range)
+  ) {
+    throw new Error(
+      `Sniper vision did not scope correctly: ${JSON.stringify({
+        baseVision,
+        earlySniperVision,
+        lateSniperVision,
+      })}`,
     );
   }
 
@@ -975,6 +1002,30 @@ async function main() {
     );
   }
 
+  const wheelPoint = await evaluate(`(() => {
+    const rect = document.querySelector('#game-canvas canvas').getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  })()`);
+  const wheelWeapons = [];
+  for (const deltaY of [120, 120, -120, -120]) {
+    await send('Input.dispatchMouseEvent', {
+      type: 'mouseWheel',
+      x: wheelPoint.x,
+      y: wheelPoint.y,
+      deltaX: 0,
+      deltaY,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    wheelWeapons.push(
+      await evaluate(
+        `document.querySelector('.weapon-button.is-active')?.dataset.weapon`,
+      ),
+    );
+  }
+  if (wheelWeapons.join(',') !== 'sniper,mg,sniper,pistol') {
+    throw new Error(`Mouse wheel weapon cycle failed: ${JSON.stringify(wheelWeapons)}`);
+  }
+
   await evaluate(`(() => {
     const app = window.__AFTERSHOT__.app;
     const bot = app.gameState.players.find((player) => player.isBot);
@@ -1085,6 +1136,11 @@ async function main() {
         bottomEdge,
     pistolAmmo,
     sniperSpread: { early: earlySniperSpread, late: lateSniperSpread },
+    sniperVision: {
+      base: baseVision,
+      early: earlySniperVision,
+      late: lateSniperVision,
+    },
     sniper,
     mg,
         mgDuringFire,
@@ -1093,6 +1149,7 @@ async function main() {
         slideState,
         slideKeyDuring,
     weaponSelection,
+    wheelWeapons,
     botWeaponSwitch,
         visibilityScreenshot: 'proof/visibility-occlusion.png',
     ui,

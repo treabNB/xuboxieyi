@@ -2,6 +2,8 @@ export const VISION = {
   range: 620,
   halfAngle: (58 * Math.PI) / 180,
   rays: 96,
+  sniperAimRange: 780,
+  sniperAimHalfAngle: (29 * Math.PI) / 180,
 };
 
 export function rayRectDistance(originX, originY, dirX, dirY, rect) {
@@ -109,6 +111,17 @@ export function buildVisibilityPolygon({
     points.push({ x: hit.x, y: hit.y });
   }
   return points;
+}
+
+export function getVisionProfile(aiming = false, aimCharge = 0) {
+  const charge = aiming ? Math.max(0, Math.min(1, aimCharge)) : 0;
+  return {
+    halfAngle:
+      VISION.halfAngle +
+      (VISION.sniperAimHalfAngle - VISION.halfAngle) * charge,
+    range: VISION.range + (VISION.sniperAimRange - VISION.range) * charge,
+    aimCharge: charge,
+  };
 }
 
 export function isPointInVision(

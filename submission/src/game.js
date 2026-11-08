@@ -23,6 +23,7 @@ import {
 } from './maps.js';
 import {
   buildVisibilityPolygon,
+  getVisionProfile,
   isPointInVision,
   traceRay,
   VISION,
@@ -75,6 +76,7 @@ const dom = {
   reloadLabel: document.querySelector('#reload-label'),
   focusLabel: document.querySelector('#focus-label'),
   spreadValue: document.querySelector('#spread-value'),
+  visionReadout: document.querySelector('#vision-readout'),
   focusFill: document.querySelector('#focus-fill'),
   scoreProgress: document.querySelector('#score-progress'),
   scoreboard: document.querySelector('#scoreboard'),
@@ -117,6 +119,7 @@ const app = {
   latestVisualPlayers: [],
   latestLocalPlayer: null,
   scoreboardSignature: '',
+  wheelSwitchAt: 0,
   toastTimer: null,
 };
 
@@ -669,6 +672,25 @@ function requestReload() {
   app.reloadRequested = true;
 }
 
+function visionForPlayer(player) {
+  if (!player) {
+    return getVisionProfile(false, 0);
+  }
+  const aim =
+    player.weapon === 'sniper'
+      ? getAimStats(
+          player.weapon,
+          player.aimMs ?? 0,
+          Boolean(player.pointerDown),
+          player.bloom ?? 0,
+        )
+      : { charge: 0 };
+  return getVisionProfile(
+    player.weapon === 'sniper' && player.pointerDown,
+    aim.charge,
+  );
+}
+
 function updateScoreboard(ranking, local) {
   const signature = ranking
     .map(
@@ -791,7 +813,11 @@ function updateHud(players, now) {
     : 0;
   const bloom = local.bloom ?? local.mgBloom ?? 0;
   const aim = getAimStats(local.weapon, aimMs, local.pointerDown, bloom);
+  const vision = visionForPlayer(local);
   dom.spreadValue.textContent = `${(aim.spread * (180 / Math.PI)).toFixed(1)}°`;
+  dom.visionReadout.textContent = `视野 ${Math.round(
+    (vision.halfAngle * 360) / Math.PI,
+  )}° / ${Math.round(vision.range)}`;
   dom.focusFill.style.width = `${Math.round(
     (local.weapon === 'mg' ? Math.min(1, bloom / 40) : aim.charge) * 100,
   )}%`;
@@ -1015,6 +1041,29 @@ class ArenaScene extends Phaser.Scene {
     this.input.on('pointerdown', () => {
       app.forcePointerUp = false;
     });
+    dom.app.addEventListener(
+      'wheel',
+      (event) => {
+        if (
+          app.view !== 'game' ||
+          app.menuOpen ||
+          app.gameState?.status !== 'playing'
+        ) {
+          return;
+        }
+        event.preventDefault();
+        const direction = Math.sign(event.deltaY || event.deltaX);
+        if (!direction || performance.now() < app.wheelSwitchAt) {
+          return;
+        }
+        app.wheelSwitchAt = performance.now() + 120;
+        const current = Math.max(0, WEAPON_ORDER.indexOf(app.selectedWeapon));
+        const next =
+          (current + direction + WEAPON_ORDER.length) % WEAPON_ORDER.length;
+        chooseWeapon(WEAPON_ORDER[next]);
+      },
+      { passive: false },
+    );
     this.game.canvas.addEventListener('contextmenu', (event) => event.preventDefault());
   }
 
@@ -1029,7 +1078,10 @@ class ArenaScene extends Phaser.Scene {
         this.fixedAccumulator -= 1000 / 30;
       }
       this.snapshotAccumulator += delta;
-      if (this.snapshotAccumulator >= 50) {
+      if (
+        this.snapshotAccumulator >= 50 ||
+        app.gameState.status !== 'playing'
+      ) {
         this.snapshotAccumulator = 0;
         app.net?.sendSnapshot(makeSnapshot(app.gameState, performance.now()));
       }
@@ -1139,6 +1191,7 @@ class ArenaScene extends Phaser.Scene {
     if (player.id === observer.id) {
       return true;
     }
+    const vision = visionForPlayer(observer);
     if (
       !isPointInVision(
         observer.x,
@@ -1146,6 +1199,8 @@ class ArenaScene extends Phaser.Scene {
         observer.angle,
         player.x,
         player.y,
+        vision.halfAngle,
+        vision.range,
       )
     ) {
       return false;
@@ -1285,6 +1340,8 @@ class ArenaScene extends Phaser.Scene {
     this.lastFogX = Number.NaN;
     this.lastFogY = Number.NaN;
     this.lastFogAngle = Number.NaN;
+    this.lastFogHalfAngle = Number.NaN;
+    this.lastFogRange = Number.NaN;
   }
 
   drawArenaBase(graphics, map) {
@@ -2025,7 +2082,16 @@ class ArenaScene extends Phaser.Scene {
         Math.cos(local.angle - (this.lastFogAngle ?? Number.NaN)),
       ),
     );
-    const changed = !this.visibilityPolygon?.length || moved > 0.8 || turned > 0.004;
+    const vision = visionForPlayer(local);
+    const visionChanged =
+      Math.abs(vision.halfAngle - (this.lastFogHalfAngle ?? Number.NaN)) >
+        0.002 ||
+      Math.abs(vision.range - (this.lastFogRange ?? Number.NaN)) > 1;
+    const changed =
+      !this.visibilityPolygon?.length ||
+      moved > 0.8 ||
+      turned > 0.004 ||
+      visionChanged;
     if (!changed || now - (this.lastFogAt ?? 0) < 33) {
       return;
     }
@@ -2041,6 +2107,8 @@ class ArenaScene extends Phaser.Scene {
       originX: local.x,
       originY: local.y,
       facing: local.angle,
+      halfAngle: vision.halfAngle,
+      range: vision.range,
       obstacles: map.obstacles,
       bounds,
       rays: 64,
@@ -2069,10 +2137,13 @@ class ArenaScene extends Phaser.Scene {
     context.globalCompositeOperation = 'source-over';
     this.fogTexture.refresh();
     this.fog.setVisible(true);
+    this.activeVisionProfile = vision;
     this.lastFogAt = now;
     this.lastFogX = local.x;
     this.lastFogY = local.y;
     this.lastFogAngle = local.angle;
+    this.lastFogHalfAngle = vision.halfAngle;
+    this.lastFogRange = vision.range;
   }
 
   drawEffects(now) {
