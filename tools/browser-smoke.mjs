@@ -772,6 +772,62 @@ async function main() {
     );
   }
 
+  await send('Input.dispatchMouseEvent', {
+    type: 'mousePressed',
+    x: 1080,
+    y: 520,
+    button: 'left',
+    clickCount: 1,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  await send('Input.dispatchKeyEvent', {
+    type: 'keyDown',
+    key: 'd',
+    code: 'KeyD',
+    windowsVirtualKeyCode: 68,
+    nativeVirtualKeyCode: 68,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 140));
+  const movingSniperState = await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    return {
+      pointerDown: local.pointerDown,
+      aimBlocked: local.sniperAimBlocked,
+      ammo: local.ammo.sniper,
+    };
+  })()`);
+  await send('Input.dispatchMouseEvent', {
+    type: 'mouseReleased',
+    x: 1080,
+    y: 520,
+    button: 'left',
+    clickCount: 1,
+  });
+  await send('Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key: 'd',
+    code: 'KeyD',
+    windowsVirtualKeyCode: 68,
+    nativeVirtualKeyCode: 68,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 160));
+  const movingSniperAmmo = await evaluate(
+    `window.__AFTERSHOT__.app.gameState.players.find((player) => player.id === window.__AFTERSHOT__.app.localPlayerId).ammo.sniper`,
+  );
+  if (
+    movingSniperState.pointerDown ||
+    !movingSniperState.aimBlocked ||
+    movingSniperAmmo !== movingSniperState.ammo
+  ) {
+    throw new Error(
+      `Moving sniper aim was not reset: ${JSON.stringify({
+        movingSniperState,
+        movingSniperAmmo,
+      })}`,
+    );
+  }
+
   await pressKey('3', 'Digit3', 51);
   await send('Input.dispatchMouseEvent', {
     type: 'mouseMoved',
@@ -1265,7 +1321,7 @@ async function main() {
   })()`);
   await pressKey('q', 'KeyQ', 81);
   await waitFor(
-    `window.__AFTERSHOT__.app.gameState.players.find((player) => player.id === window.__AFTERSHOT__.app.localPlayerId).skill1Uses === 2`,
+    `window.__AFTERSHOT__.app.gameState.players.find((player) => player.id === window.__AFTERSHOT__.app.localPlayerId).skill1Uses === 4`,
   );
   await evaluate(`(() => {
     const app = window.__AFTERSHOT__.app;
@@ -1284,7 +1340,7 @@ async function main() {
       remainingUses: app.gameState.players.find((player) => player.id === app.localPlayerId).skill1Uses,
     };
   })()`);
-  if (!flashState.flashed || flashState.remainingUses !== 2) {
+  if (!flashState.flashed || flashState.remainingUses !== 4) {
     throw new Error(`Flash grenade invalid: ${JSON.stringify(flashState)}`);
   }
   await evaluate(`(() => {
@@ -1307,6 +1363,12 @@ async function main() {
     local.flashedUntil = 0;
   })()`);
 
+  await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    local.ultimateEnergy = 100;
+  })()`);
+  await waitFor(`document.querySelector('#skill2-state').textContent.includes('充能完成')`);
   await pressKey('e', 'KeyE', 69);
   await waitFor(
     `window.__AFTERSHOT__.app.gameState.players.find((player) => player.id === window.__AFTERSHOT__.app.localPlayerId).jamCastUntil > performance.now()`,
@@ -1322,10 +1384,10 @@ async function main() {
     const bot = app.gameState.players.find((player) => player.id === app.__testTargetId);
     return {
       jammed: bot.jammedUntil > performance.now(),
-      cooldown: app.gameState.players.find((player) => player.id === app.localPlayerId).skill2ReadyAt > performance.now(),
+      energy: app.gameState.players.find((player) => player.id === app.localPlayerId).ultimateEnergy,
     };
   })()`);
-  if (!jamState.jammed || !jamState.cooldown) {
+  if (!jamState.jammed || jamState.energy !== 0) {
     throw new Error(`Jam wave invalid: ${JSON.stringify(jamState)}`);
   }
   await captureScreenshot(path.join('proof', 'long-falcon-abilities.png'));
@@ -1361,6 +1423,12 @@ async function main() {
   await waitFor(
     `!document.querySelector('#ability-hud').classList.contains('is-hidden')`,
   );
+  await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    local.ultimateEnergy = 100;
+  })()`);
+  await waitFor(`document.querySelector('#skill1-state').textContent.includes('充能完成')`);
   await pressKey('q', 'KeyQ', 81);
   await waitFor(
     `!document.querySelector('#burn-overlay').classList.contains('is-hidden')`,
@@ -1399,6 +1467,12 @@ async function main() {
     `!document.querySelector('#ability-hud').classList.contains('is-hidden') &&
       document.querySelector('#skill2-key').textContent === 'X'`,
   );
+  await evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const local = app.gameState.players.find((player) => player.id === app.localPlayerId);
+    local.ultimateEnergy = 100;
+  })()`);
+  await waitFor(`document.querySelector('#skill1-state').textContent.includes('充能完成')`);
   await pressKey('q', 'KeyQ', 81);
   await waitFor(
     `window.__AFTERSHOT__.app.gameState.players.find((player) => player.id === window.__AFTERSHOT__.app.localPlayerId).reconUntil > performance.now()`,
@@ -1418,9 +1492,11 @@ async function main() {
     app.scene.visiblePlayerIds = new Set(
       [...(app.scene.visiblePlayerIds ?? [])].filter((id) => id !== bot.id),
     );
+    app.scene.lastReconAt = 0;
     app.scene.drawReconOutline(app.gameState.players, local);
     return {
       reconIds: [...(app.scene.reconIds ?? [])],
+      reconVisionCount: app.scene.reconVisionCount,
       reconRemaining: local.reconUntil - performance.now(),
       skill2Key: document.querySelector('#skill2-key').textContent,
     };
@@ -1430,6 +1506,7 @@ async function main() {
       await evaluate(`window.__AFTERSHOT__.app.__testTargetId`),
     ) ||
     reconState.reconRemaining <= 0 ||
+    reconState.reconVisionCount < 1 ||
     reconState.skill2Key !== 'X'
   ) {
     throw new Error(`Agent recon invalid: ${JSON.stringify(reconState)}`);
@@ -1466,6 +1543,21 @@ async function main() {
   }
   await captureScreenshot(path.join('proof', 'long-agent46-abilities.png'));
 
+  const audioState = await evaluate(`(() => ({
+    enabled: window.__AFTERSHOT__.audio.enabled,
+    state: window.__AFTERSHOT__.audio.context?.state ?? 'none',
+    eventCount: window.__AFTERSHOT__.audio.eventCount,
+    button: document.querySelector('#audio-button').textContent,
+  }))()`);
+  if (
+    !audioState.enabled ||
+    audioState.state !== 'running' ||
+    audioState.eventCount < 1 ||
+    !audioState.button.includes('开')
+  ) {
+    throw new Error(`Audio feedback invalid: ${JSON.stringify(audioState)}`);
+  }
+
   if (consoleErrors.length) {
     throw new Error(`Browser errors: ${consoleErrors.join(' | ')}`);
   }
@@ -1498,6 +1590,7 @@ async function main() {
       late: lateSniperVision,
     },
     sniper,
+    movingSniperState,
     mg,
         mgDuringFire,
         mgRecovered,
@@ -1516,6 +1609,7 @@ async function main() {
       ashState,
       reconState,
       agentState,
+      audioState,
     },
         visibilityScreenshot: 'proof/visibility-occlusion.png',
     ui,

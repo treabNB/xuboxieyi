@@ -485,6 +485,19 @@ input::placeholder {
   text-transform: uppercase;
 }
 
+.quick-match-row {
+  display: grid;
+  grid-template-columns: 138px 1fr;
+  gap: 10px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.quick-match-row span {
+  color: var(--paper-dim);
+  font-size: 10px;
+}
+
 .map-select {
   display: grid;
   grid-template-columns: 92px 1fr;
@@ -1005,6 +1018,10 @@ kbd {
 }
 
 .pause-immersive {
+  grid-column: 1 / -1;
+}
+
+.pause-audio {
   grid-column: 1 / -1;
 }
 

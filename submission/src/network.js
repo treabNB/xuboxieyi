@@ -35,6 +35,15 @@ function normalizeMatchMode(matchMode) {
   return MATCH_MODE_IDS.has(matchMode) ? matchMode : 'quick';
 }
 
+function randomQueueRoomCode() {
+  const slot = Math.floor(Date.now() / 300000);
+  return `Q${slot
+    .toString(36)
+    .toUpperCase()
+    .slice(-5)
+    .padStart(5, '0')}`;
+}
+
 export class NetworkSession {
   constructor(handlers = {}) {
     this.handlers = handlers;
@@ -190,6 +199,52 @@ export class NetworkSession {
     this.#startPing();
   }
 
+  async quickMatch(name, characterId = 'falcon', matchMode = 'quick') {
+    if (!this.available) {
+      throw new Error('联机组件没有载入。');
+    }
+    this.close();
+    this.closed = false;
+    this.role = 'host';
+    this.localPlayerId = 'host';
+    this.matchActive = false;
+    this.roomCode = randomQueueRoomCode();
+    this.selectedMatchMode = normalizeMatchMode(matchMode);
+    this.roster = new Map([
+      [
+        'host',
+        {
+          id: 'host',
+          name: sanitizeName(name),
+          isHost: true,
+          connected: true,
+          characterId: normalizeCharacter(characterId),
+        },
+      ],
+    ]);
+
+    try {
+      await this.#openHostPeer();
+      this.handlers.onLobby?.(
+        this.getRoster(),
+        this.roomCode,
+        this.selectedMatchMode,
+      );
+      return { role: 'host', roomCode: this.roomCode };
+    } catch (error) {
+      this.peer?.destroy();
+      this.peer = null;
+      if (error?.type !== 'unavailable-id') {
+        this.role = 'solo';
+        throw error;
+      }
+    }
+
+    await new Promise((resolve) => window.setTimeout(resolve, 350));
+    await this.joinRoom(this.roomCode, name, characterId);
+    return { role: 'client', roomCode: this.roomCode };
+  }
+
   getRoster() {
     return [...this.roster.values()];
   }
@@ -341,7 +396,9 @@ export class NetworkSession {
           window.clearTimeout(timeout);
           reject(error);
         }
-        this.handlers.onError?.(error);
+        if (error?.type !== 'unavailable-id') {
+          this.handlers.onError?.(error);
+        }
       });
       this.peer.on('disconnected', () => {
         this.handlers.onStatus?.('信令重连中', 'pending');

@@ -85,6 +85,10 @@ function step(state, now, extra = {}) {
   });
   const human = state.players.find((player) => !player.isBot);
   human.health = 10000;
+  for (const bot of state.players.filter((player) => player.isBot)) {
+    bot.health = 10000;
+    bot.ultimateEnergy = 100;
+  }
   let now = 1000;
   for (let elapsed = 0; elapsed < 4000; elapsed += 50) {
     now += 50;
@@ -97,7 +101,8 @@ function step(state, now, extra = {}) {
         (player.skill1ReadyAt > now ||
           player.skill2ReadyAt > now ||
           player.reconUntil > now ||
-          player.burningUntil > now),
+          player.burningUntil > now ||
+          player.focusActive),
     ),
     'long-mode bots should use their active abilities',
   );
@@ -152,7 +157,7 @@ function step(state, now, extra = {}) {
   const { state, alpha, bravo } = makeDuel('falcon', 'ash');
   inputFor(state, alpha, bravo, { skill1: true });
   updateSimulation(state, 0.05, 1050);
-  assert.equal(alpha.skill1Uses, 2);
+  assert.equal(alpha.skill1Uses, 4);
   assert.equal(state.flashbangs.length, 1);
   inputFor(state, alpha, bravo, { skill1: false });
   updateSimulation(state, 0.05, 1100);
@@ -164,6 +169,7 @@ function step(state, now, extra = {}) {
 
 {
   const { state, alpha, bravo } = makeDuel('falcon', 'falcon');
+  alpha.ultimateEnergy = 100;
   inputFor(state, alpha, bravo, { skill2: true });
   updateSimulation(state, 0.05, 1050);
   assert.ok(alpha.jamCastUntil >= 6000);
@@ -173,7 +179,7 @@ function step(state, now, extra = {}) {
   assert.equal(alpha.x, lockedX);
   alpha.jamCastUntil = 1090;
   updateSimulation(state, 0.05, 1100);
-  assert.ok(bravo.jammedUntil >= 14100);
+  assert.ok(bravo.jammedUntil >= 17100);
   const baseSpread = WEAPONS.pistol.spreadStart;
   const jammedSpread = getEffectiveAimStats(
     'pistol',
@@ -188,6 +194,7 @@ function step(state, now, extra = {}) {
 
 {
   const { state, alpha, bravo } = makeDuel('ash', 'falcon');
+  alpha.ultimateEnergy = 100;
   inputFor(state, alpha, bravo, { skill1: true });
   updateSimulation(state, 0.05, 1050);
   assert.ok(alpha.burningUntil >= 21000);
@@ -227,10 +234,12 @@ function step(state, now, extra = {}) {
   inputFor(state, alpha, bravo, { pointerDown: false });
   updateSimulation(state, 0.05, 1010);
   assert.equal(bravo.health, 79, 'ash reduced pistol damage by 20%');
+  assert.equal(bravo.ultimateEnergy, 21, 'damage taken charges the ultimate meter');
 }
 
 {
   const { state, alpha, bravo } = makeDuel('agent46', 'falcon');
+  alpha.ultimateEnergy = 100;
   inputFor(state, alpha, bravo, { skill1: true });
   updateSimulation(state, 0.05, 1050);
   assert.ok(alpha.reconUntil >= 3000);
@@ -252,14 +261,39 @@ function step(state, now, extra = {}) {
   assert.equal(killer.score, 1);
 }
 
+{
+  const { state, alpha, bravo } = makeDuel('falcon', 'ash');
+  alpha.weapon = 'sniper';
+  alpha.pointerDown = true;
+  alpha.aimStartedAt = 250;
+  inputFor(state, alpha, bravo, {
+    pointerDown: true,
+    right: true,
+    weapon: 'sniper',
+  });
+  updateSimulation(state, 0.05, 1050);
+  assert.equal(alpha.pointerDown, false);
+  assert.equal(alpha.sniperAimBlocked, true);
+  assert.equal(alpha.ammo.sniper, 5);
+
+  inputFor(state, alpha, bravo, {
+    pointerDown: true,
+    right: false,
+    weapon: 'sniper',
+  });
+  updateSimulation(state, 0.05, 1100);
+  assert.equal(alpha.pointerDown, true);
+  assert.equal(alpha.sniperAimBlocked, false);
+}
+
 console.log(
   JSON.stringify(
     {
       status: 'passed',
       matchModes: Object.keys(MATCH_MODES),
       spawnProtectionMs: 2000,
-      flashUses: 3,
-      jamDurationMs: 13000,
+      flashUses: 5,
+      jamDurationMs: 16000,
       ashDamageReduction: 0.2,
       assassinationRange: 58,
     },

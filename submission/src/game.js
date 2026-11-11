@@ -24,6 +24,7 @@ import {
   DEFAULT_CHARACTER_ID,
   getCharacterDefinition,
 } from './characters.js';
+import { GameAudio } from './audio.js';
 import { NetworkSession } from './network.js';
 import {
   DEFAULT_MAP_ID,
@@ -49,6 +50,7 @@ const dom = {
   difficultySelect: document.querySelector('#difficulty-select'),
   roomCode: document.querySelector('#room-code-input'),
   practice: document.querySelector('#practice-button'),
+  quickMatch: document.querySelector('#quick-match-button'),
   createRoom: document.querySelector('#create-room-button'),
   joinRoom: document.querySelector('#join-room-button'),
   entryMessage: document.querySelector('#entry-message'),
@@ -72,6 +74,7 @@ const dom = {
   resumeButton: document.querySelector('#resume-button'),
   quitMatch: document.querySelector('#quit-match-button'),
   immersiveButton: document.querySelector('#immersive-button'),
+  audioButton: document.querySelector('#audio-button'),
   matchClock: document.querySelector('#match-clock'),
   mapStampName: document.querySelector('#map-stamp-name'),
   matchState: document.querySelector('#match-state'),
@@ -123,6 +126,13 @@ const dom = {
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 const cssColor = (value) => `#${value.toString(16).padStart(6, '0')}`;
 const FOG_TEXTURE_SCALE = 0.5;
+const gameAudio = new GameAudio();
+
+try {
+  gameAudio.enabled = localStorage.getItem('aftershot-audio') !== 'off';
+} catch {
+  gameAudio.enabled = true;
+}
 
 const app = {
   scene: null,
@@ -157,6 +167,8 @@ const app = {
   scoreboardSignature: '',
   wheelSwitchAt: 0,
   alertUntil: 0,
+  quickMatch: false,
+  quickMatchTimer: null,
   toastTimer: null,
 };
 
@@ -254,6 +266,20 @@ function updateImmersiveButton() {
       ? '退出全屏防误触'
       : '全屏防误触';
   dom.immersiveButton.disabled = false;
+}
+
+function updateAudioButton() {
+  dom.audioButton.textContent = `音效：${gameAudio.enabled ? '开' : '关'}`;
+}
+
+function toggleAudio() {
+  const enabled = gameAudio.toggle();
+  try {
+    localStorage.setItem('aftershot-audio', enabled ? 'on' : 'off');
+  } catch {
+    // Audio preference still applies for this session.
+  }
+  updateAudioButton();
 }
 
 async function enterImmersiveMode() {
@@ -690,10 +716,77 @@ function renderLobby(roster, roomCode, matchMode = app.selectedMatchMode) {
       : '等待房主开始';
   setNetworkStatus(`${roster.length} 人在线`, 'online');
   dom.roomLabel.textContent = `房间 ${roomCode || app.net?.roomCode || ''}`;
+  scheduleQuickMatchStart(roster);
+}
+
+function cancelQuickMatchTimer() {
+  if (app.quickMatchTimer) {
+    window.clearTimeout(app.quickMatchTimer);
+    app.quickMatchTimer = null;
+  }
+}
+
+function scheduleQuickMatchStart(roster) {
+  if (
+    !app.quickMatch ||
+    app.net?.role !== 'host' ||
+    roster.length < 2 ||
+    app.quickMatchTimer
+  ) {
+    return;
+  }
+  setLobbyMessage('匹配成功，4 秒后自动开始。');
+  app.quickMatchTimer = window.setTimeout(() => {
+    app.quickMatchTimer = null;
+    if (
+      app.quickMatch &&
+      app.view === 'lobby' &&
+      app.net?.role === 'host' &&
+      app.net.getRoster().length >= 2
+    ) {
+      void beginHostMatch();
+    }
+  }, 4000);
+}
+
+async function startQuickMatch() {
+  setEntryMessage('');
+  dom.quickMatch.disabled = true;
+  setNetworkStatus('匹配中', 'pending');
+  try {
+    configureNetwork();
+    app.quickMatch = true;
+    const result = await app.net.quickMatch(
+      playerName(),
+      app.selectedCharacterId,
+      app.selectedMatchMode,
+    );
+    renderLobby(
+      app.net.getRoster(),
+      result.roomCode,
+      app.net.selectedMatchMode,
+    );
+    setLobbyMessage(
+      result.role === 'host'
+        ? '已进入公开匹配池，等待其他玩家。'
+        : '已加入公开对局，等待房主自动开局。',
+    );
+  } catch (error) {
+    app.quickMatch = false;
+    cancelQuickMatchTimer();
+    app.net?.close();
+    app.net = null;
+    setEntryMessage(error?.message || '随机匹配失败，请稍后重试。');
+    setNetworkStatus('未连接', 'offline');
+  } finally {
+    dom.quickMatch.disabled = false;
+  }
 }
 
 function returnToEntry() {
   void exitImmersiveMode();
+  app.quickMatch = false;
+  cancelQuickMatchTimer();
   app.net?.close();
   app.net = null;
   app.mode = 'preview';
@@ -855,6 +948,7 @@ function consumeGameEvent(event) {
   if (event.type === 'recon' && event.shooter !== app.localPlayerId) {
     showSystemAlert('你的位置已泄露');
   }
+  gameAudio.playEvent(event.type, event);
   app.scene?.addGameEffect(event);
   if (app.seenEvents.size > 800) {
     app.seenEvents.clear();
@@ -986,56 +1080,49 @@ function updateAbilityHud(local, now) {
   dom.skill2Key.textContent = character.skill2.key;
   dom.skill2Name.textContent = character.skill2.name;
 
-  const skill1Remaining = local.skill1ReadyRemaining ?? 0;
+  const ultimateEnergy = Math.max(0, Math.min(100, local.ultimateEnergy ?? 0));
   if (character.id === 'falcon') {
     dom.skill1State.textContent = `${local.skill1Uses ?? 0} 次 · ${
       local.skill1Uses > 0 ? '就绪' : '已耗尽'
     }`;
-    dom.skill1Meter.style.width = `${((local.skill1Uses ?? 0) / 3) * 100}%`;
+    dom.skill1Meter.style.width = `${((local.skill1Uses ?? 0) / 5) * 100}%`;
   } else if (character.id === 'ash') {
     dom.skill1State.textContent =
       (local.burningRemaining ?? 0) > 0
         ? `燃烧 ${secondsLabel(local.burningRemaining)}`
-        : skill1Remaining > 0
-          ? `冷却 ${secondsLabel(skill1Remaining)}`
-          : '就绪';
+        : ultimateEnergy >= 100
+          ? '充能完成 · 按 Q'
+          : `受击充能 ${Math.round(ultimateEnergy)}%`;
     dom.skill1Meter.style.width = `${
       (local.burningRemaining ?? 0) > 0
         ? ((local.burningRemaining ?? 0) / 20000) * 100
-        : skill1Remaining > 0
-          ? (1 - skill1Remaining / 80000) * 100
-          : 100
+        : ultimateEnergy
     }%`;
   } else {
     dom.skill1State.textContent =
       (local.reconRemaining ?? 0) > 0
         ? `侦查 ${secondsLabel(local.reconRemaining)}`
-        : skill1Remaining > 0
-          ? `冷却 ${secondsLabel(skill1Remaining)}`
-          : '就绪';
+        : ultimateEnergy >= 100
+          ? '充能完成 · 按 Q'
+          : `受击充能 ${Math.round(ultimateEnergy)}%`;
     dom.skill1Meter.style.width = `${
       (local.reconRemaining ?? 0) > 0
-        ? ((local.reconRemaining ?? 0) / 2000) * 100
-        : skill1Remaining > 0
-          ? (1 - skill1Remaining / 30000) * 100
-          : 100
+        ? ((local.reconRemaining ?? 0) / 4000) * 100
+        : ultimateEnergy
     }%`;
   }
 
-  const skill2Remaining = local.skill2ReadyRemaining ?? 0;
   if (character.id === 'falcon') {
     dom.skill2State.textContent =
       (local.jamCastRemaining ?? 0) > 0
         ? `锁定释放 ${secondsLabel(local.jamCastRemaining)}`
-        : skill2Remaining > 0
-          ? `冷却 ${secondsLabel(skill2Remaining)}`
-          : '就绪';
+        : ultimateEnergy >= 100
+          ? '充能完成 · 按 E'
+          : `受击充能 ${Math.round(ultimateEnergy)}%`;
     dom.skill2Meter.style.width = `${
       (local.jamCastRemaining ?? 0) > 0
         ? (1 - (local.jamCastRemaining ?? 0) / 5000) * 100
-        : skill2Remaining > 0
-          ? (1 - skill2Remaining / 60000) * 100
-          : 100
+        : ultimateEnergy
     }%`;
   } else if (character.id === 'ash') {
     dom.skill2State.textContent = local.focusActive
@@ -1053,7 +1140,9 @@ function updateAbilityHud(local, now) {
   slots[0]?.classList.toggle('is-active', (local.burningRemaining ?? 0) > 0);
   slots[0]?.classList.toggle(
     'is-ready',
-    character.id !== 'falcon' && skill1Remaining <= 0,
+    character.id === 'falcon'
+      ? (local.skill1Uses ?? 0) > 0
+      : ultimateEnergy >= 100,
   );
   slots[1]?.classList.toggle(
     'is-active',
@@ -1061,7 +1150,8 @@ function updateAbilityHud(local, now) {
   );
   slots[1]?.classList.toggle(
     'is-ready',
-    local.assassinationReady || (character.id === 'falcon' && skill2Remaining <= 0),
+    local.assassinationReady ||
+      (character.id === 'falcon' && ultimateEnergy >= 100),
   );
 
   const flashRemaining = Math.max(0, local.flashedRemaining ?? 0);
@@ -1236,6 +1326,8 @@ function updateHud(players, now) {
         : '正在校准'
     : local.weapon === 'mg' && bloom > 0.05
       ? '散布回收'
+      : local.sniperAimBlocked
+        ? '移动中 · 瞄准重置'
       : '按住鼠标';
 
   if (app.mode !== 'client') {
@@ -1297,6 +1389,8 @@ function restartMatch() {
 
 function leaveAfterMatch() {
   if (app.mode === 'host') {
+    app.quickMatch = false;
+    cancelQuickMatchTimer();
     app.net.returnToLobby();
     dom.endPanel.classList.add('is-hidden');
     renderLobby(app.net.getRoster(), app.net.roomCode);
@@ -1741,7 +1835,7 @@ class ArenaScene extends Phaser.Scene {
         type: 'jam-wave',
         x: event.x,
         y: event.y,
-        radius: 480,
+        radius: event.radius ?? 600,
         until: now + 720,
       });
     } else if (event.type === 'assassinate') {
@@ -2219,7 +2313,7 @@ class ArenaScene extends Phaser.Scene {
     this.drawFlashbangs(graphics, local, now);
     this.drawReticle(players);
     this.drawFog(players, now);
-    this.drawReconOutline(players, local);
+    this.drawReconOutline(players, local, now);
     this.drawFootsteps(players, local, now);
   }
 
@@ -2280,29 +2374,61 @@ class ArenaScene extends Phaser.Scene {
     }
   }
 
-  drawReconOutline(players, local) {
+  drawReconOutline(players, local, now = performance.now()) {
     const graphics = this.reconGraphics;
-    graphics.clear();
-    this.reconIds = [];
     if (
       app.view !== 'game' ||
       !local?.alive ||
       local.characterId !== 'agent46' ||
       (local.reconRemaining ?? 0) <= 0
     ) {
+      graphics.clear();
+      this.reconIds = [];
+      this.reconVisionCount = 0;
+      this.lastReconAt = 0;
       return;
     }
+    if (now - (this.lastReconAt ?? 0) < 50) {
+      return;
+    }
+    this.lastReconAt = now;
+    graphics.clear();
+    this.reconIds = [];
+    this.reconVisionCount = 0;
+    const map = getMapDefinition(this.currentMapId);
+    const bounds = {
+      left: WORLD.padding,
+      right: WORLD.width - WORLD.padding,
+      top: WORLD.padding,
+      bottom: WORLD.playBottom,
+    };
     for (const player of players) {
       if (
         player.id === local.id ||
-        !player.alive ||
-        this.visiblePlayerIds?.has(player.id)
+        !player.alive
       ) {
         continue;
       }
       this.reconIds.push(player.id);
       const color =
         getCharacterDefinition(player.characterId)?.color ?? 0xefe7d3;
+      const vision = visionForPlayer(player);
+      const cone = buildVisibilityPolygon({
+        originX: player.x,
+        originY: player.y,
+        facing: player.angle,
+        halfAngle: vision.halfAngle,
+        range: vision.range,
+        obstacles: map.obstacles,
+        bounds,
+        rays: 48,
+      });
+      graphics.lineStyle(1, color, 0.24);
+      graphics.strokePoints(cone, true);
+      this.reconVisionCount += 1;
+      if (this.visiblePlayerIds?.has(player.id)) {
+        continue;
+      }
       graphics.lineStyle(2, color, 0.82);
       graphics.strokeCircle(player.x, player.y, PLAYER_RADIUS + 8);
       graphics.lineBetween(
@@ -2318,6 +2444,7 @@ class ArenaScene extends Phaser.Scene {
     const graphics = this.footstepGraphics;
     graphics.clear();
     this.footstepSources = [];
+    this.footstepSoundAt ??= new Map();
     if (app.view !== 'game' || !local?.alive) {
       return;
     }
@@ -2382,6 +2509,19 @@ class ArenaScene extends Phaser.Scene {
         x,
         y,
       });
+      if (now >= (this.footstepSoundAt.get(player.id) ?? 0)) {
+        gameAudio.playFootstep(sprinting);
+        this.footstepSoundAt.set(
+          player.id,
+          now + (sprinting ? 300 : 560),
+        );
+      }
+    }
+    const activeIds = new Set(players.map((player) => player.id));
+    for (const id of this.footstepSoundAt.keys()) {
+      if (!activeIds.has(id)) {
+        this.footstepSoundAt.delete(id);
+      }
     }
   }
 
@@ -2917,6 +3057,7 @@ class ArenaScene extends Phaser.Scene {
 
 function wireUi() {
   dom.practice.addEventListener('click', beginLocalPractice);
+  dom.quickMatch.addEventListener('click', startQuickMatch);
   dom.createRoom.addEventListener('click', createRoom);
   dom.joinRoom.addEventListener('click', joinRoom);
   dom.roomCode.addEventListener('input', () => {
@@ -2965,8 +3106,16 @@ function wireUi() {
   dom.resumeButton.addEventListener('click', closePause);
   dom.quitMatch.addEventListener('click', quitMatch);
   dom.immersiveButton.addEventListener('click', toggleImmersiveMode);
+  dom.audioButton.addEventListener('click', toggleAudio);
   dom.restart.addEventListener('click', restartMatch);
   dom.returnLobby.addEventListener('click', leaveAfterMatch);
+
+  window.addEventListener('pointerdown', () => gameAudio.unlock(), {
+    passive: true,
+  });
+  window.addEventListener('keydown', () => gameAudio.unlock(), {
+    passive: true,
+  });
 
   window.addEventListener(
     'keydown',
@@ -3093,6 +3242,8 @@ function wireUi() {
   });
 }
 
+updateAudioButton();
+
 let storedDifficulty = 'normal';
 try {
   storedDifficulty = localStorage.getItem('aftershot-difficulty') || 'normal';
@@ -3163,6 +3314,7 @@ new Phaser.Game({
 
 window.__AFTERSHOT__ = {
   app,
+  audio: gameAudio,
   beginLocalPractice,
   chooseWeapon,
   requestReload,

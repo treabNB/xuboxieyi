@@ -323,6 +323,11 @@ try {
   const guestId = await guest.evaluate(
     `window.__AFTERSHOT__.app.localPlayerId`,
   );
+  await host.evaluate(`(() => {
+    const app = window.__AFTERSHOT__.app;
+    const guest = app.gameState.players.find((player) => player.id === ${JSON.stringify(guestId)});
+    guest.ultimateEnergy = 100;
+  })()`);
   await guest.keyDown('q', 'KeyQ', 81);
   await new Promise((resolve) => setTimeout(resolve, 80));
   await guest.keyUp('q', 'KeyQ', 81);
@@ -451,6 +456,91 @@ try {
     `document.querySelector('#network-status').textContent.includes('离线')`,
     5000,
   );
+  await guest.evaluate(`window.__AFTERSHOT__.returnToEntry()`);
+  await guest.waitFor(`window.__AFTERSHOT__.app.view === 'entry'`);
+
+  await Promise.all([
+    host.click('#quick-match-button'),
+    guest.click('#quick-match-button'),
+  ]);
+  await new Promise((resolve) => setTimeout(resolve, 5000));
+  const randomMatchDiagnostics = {
+    host: await host.evaluate(`(() => ({
+      view: window.__AFTERSHOT__.app.view,
+      mode: window.__AFTERSHOT__.app.mode,
+      role: window.__AFTERSHOT__.app.net?.role ?? null,
+      roomCode: window.__AFTERSHOT__.app.net?.roomCode ?? '',
+      roster: window.__AFTERSHOT__.app.net?.getRoster().length ?? 0,
+      message: document.querySelector('#entry-message').textContent || document.querySelector('#lobby-message').textContent,
+    }))()`),
+    guest: await guest.evaluate(`(() => ({
+      view: window.__AFTERSHOT__.app.view,
+      mode: window.__AFTERSHOT__.app.mode,
+      role: window.__AFTERSHOT__.app.net?.role ?? null,
+      roomCode: window.__AFTERSHOT__.app.net?.roomCode ?? '',
+      roster: window.__AFTERSHOT__.app.net?.getRoster().length ?? 0,
+      message: document.querySelector('#entry-message').textContent || document.querySelector('#lobby-message').textContent,
+    }))()`),
+  };
+  console.log(JSON.stringify({ randomMatchDiagnostics }, null, 2));
+  await host.waitFor(
+    `!document.querySelector('#lobby-panel').classList.contains('is-hidden') ||
+      window.__AFTERSHOT__.app.view === 'game'`,
+    20000,
+  );
+  await guest.waitFor(
+    `!document.querySelector('#lobby-panel').classList.contains('is-hidden') ||
+      window.__AFTERSHOT__.app.view === 'game'`,
+    20000,
+  );
+  await host.waitFor(`window.__AFTERSHOT__.app.view === 'game'`, 12000);
+  await guest.waitFor(`window.__AFTERSHOT__.app.view === 'game'`, 12000);
+  const hostAliasRole = await host.evaluate(
+    `window.__AFTERSHOT__.app.net?.role`,
+  );
+  const randomClient = hostAliasRole === 'client' ? host : guest;
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  const randomMatchRuntime = {
+    host: await host.evaluate(`(() => ({
+      mode: window.__AFTERSHOT__.app.mode,
+      role: window.__AFTERSHOT__.app.net?.role,
+      status: window.__AFTERSHOT__.app.gameState.status,
+      connections: window.__AFTERSHOT__.app.net?.hostConnections.size ?? 0,
+    }))()`),
+    guest: await guest.evaluate(`(() => ({
+      mode: window.__AFTERSHOT__.app.mode,
+      role: window.__AFTERSHOT__.app.net?.role,
+      snapshot: Boolean(window.__AFTERSHOT__.app.snapshot),
+      status: window.__AFTERSHOT__.app.gameState.status,
+    }))()`),
+  };
+  console.log(JSON.stringify({ randomMatchRuntime }, null, 2));
+  await randomClient.waitFor(`Boolean(window.__AFTERSHOT__.app.snapshot)`, 12000);
+  const randomMatchState = {
+    host: await host.evaluate(`(() => ({
+      mode: window.__AFTERSHOT__.app.mode,
+      players: window.__AFTERSHOT__.app.mode === 'host'
+        ? window.__AFTERSHOT__.app.gameState.players.length
+        : window.__AFTERSHOT__.app.snapshot?.players.length ?? 0,
+      quickMatch: window.__AFTERSHOT__.app.quickMatch,
+    }))()`),
+    guest: await guest.evaluate(`(() => ({
+      mode: window.__AFTERSHOT__.app.mode,
+      players: window.__AFTERSHOT__.app.mode === 'host'
+        ? window.__AFTERSHOT__.app.gameState.players.length
+        : window.__AFTERSHOT__.app.snapshot?.players.length ?? 0,
+      quickMatch: window.__AFTERSHOT__.app.quickMatch,
+    }))()`),
+  };
+  if (
+    randomMatchState.host.players !== 2 ||
+    randomMatchState.guest.players !== 2 ||
+    new Set([randomMatchState.host.mode, randomMatchState.guest.mode]).size !== 2 ||
+    !randomMatchState.host.quickMatch ||
+    !randomMatchState.guest.quickMatch
+  ) {
+    throw new Error(`Random match failed: ${JSON.stringify(randomMatchState)}`);
+  }
 
   if (host.errors.length || guest.errors.length) {
     throw new Error(
@@ -468,6 +558,9 @@ try {
     networkResult,
     returnState,
     guestReturnState,
+    randomMatchState,
+    randomMatchDiagnostics,
+    randomMatchRuntime,
     hostErrors: host.errors,
     guestErrors: guest.errors,
   };

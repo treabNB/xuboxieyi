@@ -12,17 +12,19 @@ export const CHARACTERS = {
     skill1: {
       name: '战术闪光弹',
       key: 'Q',
-      uses: 3,
+      uses: 5,
       description: '投出闪光弹，1.5 秒后激发。',
     },
     skill2: {
       name: '战术干扰波',
       key: 'E',
-      cooldownMs: 60000,
+      ultimate: true,
+      energyCost: 100,
       castMs: 5000,
-      durationMs: 13000,
-      radius: 480,
-      description: '读条后干扰附近敌人的射击。',
+      durationMs: 16000,
+      radius: 600,
+      spreadMultiplier: 1.75,
+      description: '充能后读条，干扰附近敌人的射击。',
     },
   },
   ash: {
@@ -35,9 +37,10 @@ export const CHARACTERS = {
     skill1: {
       name: '燃烧',
       key: 'Q',
-      cooldownMs: 80000,
+      ultimate: true,
+      energyCost: 100,
       durationMs: 20000,
-      description: '持续 20 秒，机枪伤害翻倍。',
+      description: '充能后持续 20 秒，机枪伤害翻倍。',
     },
     skill2: {
       name: '专注',
@@ -55,9 +58,10 @@ export const CHARACTERS = {
     skill1: {
       name: '侦查',
       key: 'Q',
-      cooldownMs: 30000,
-      durationMs: 2000,
-      description: '短暂看见全图敌人的位置轮廓。',
+      ultimate: true,
+      energyCost: 100,
+      durationMs: 4000,
+      description: '4 秒看见全图敌人位置与视野轮廓。',
     },
     skill2: {
       name: '偷袭',
