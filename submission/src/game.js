@@ -269,7 +269,9 @@ function updateImmersiveButton() {
 }
 
 function updateAudioButton() {
-  dom.audioButton.textContent = `音效：${gameAudio.enabled ? '开' : '关'}`;
+  dom.audioButton.textContent = `音效：${
+    gameAudio.enabled ? '开 · 200%' : '关'
+  }`;
 }
 
 function toggleAudio() {
@@ -1312,23 +1314,23 @@ function updateHud(players, now) {
       ? Math.min(1, bloom / (local.focusActive ? 30 : 40))
       : aim.charge) * 100,
   )}%`;
-  dom.focusLabel.textContent = local.pointerDown
-    ? weapon.trigger === 'hold'
-      ? local.focusActive
-        ? '专注压制'
-        : stamina >= staminaCost
-        ? '散布累积'
-        : '体力不足'
-      : staminaCost > 0 && stamina < staminaCost
-        ? '体力不足'
-        : aim.charge >= 0.98
-        ? '弹道锁定'
-        : '正在校准'
-    : local.weapon === 'mg' && bloom > 0.05
-      ? '散布回收'
-      : local.sniperAimBlocked
-        ? '移动中 · 瞄准重置'
-      : '按住鼠标';
+  dom.focusLabel.textContent = local.sniperAimBlocked
+    ? '移动中 · 精度归零'
+    : local.pointerDown
+      ? weapon.trigger === 'hold'
+        ? local.focusActive
+          ? '专注压制'
+          : stamina >= staminaCost
+          ? '散布累积'
+          : '体力不足'
+        : staminaCost > 0 && stamina < staminaCost
+          ? '体力不足'
+          : aim.charge >= 0.98
+          ? '弹道锁定'
+          : '正在校准'
+      : local.weapon === 'mg' && bloom > 0.05
+        ? '散布回收'
+        : '按住鼠标';
 
   if (app.mode !== 'client') {
     app.selectedWeapon = local.weapon;

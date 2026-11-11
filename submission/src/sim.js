@@ -645,7 +645,7 @@ function awardKill(state, shooter, target, now, weapon = shooter.weapon) {
   }
 }
 
-function fireWeapon(state, player, now) {
+function fireWeapon(state, player, now, forceBaseSpread = false) {
   const weapon = WEAPONS[player.weapon];
   const staminaCost =
     player.weapon === 'mg' && player.focusActive
@@ -667,7 +667,7 @@ function fireWeapon(state, player, now) {
   player.invulnerableUntil = 0;
   const aim = getEffectiveAimStats(
     player.weapon,
-    now - player.aimStartedAt,
+    forceBaseSpread ? 0 : now - player.aimStartedAt,
     player.pointerDown,
     player.mgBloom,
     player.characterId,
@@ -1410,10 +1410,10 @@ function updatePlayer(state, player, dt, now) {
   const sliding = now < player.slideUntil;
   const sniperMoving =
     player.weapon === 'sniper' && aimHeld && (moving || sliding);
+  const wasSniperAimBlocked = player.sniperAimBlocked;
   player.sniperAimBlocked = sniperMoving;
-  if (sniperMoving && player.pointerDown) {
-    player.pointerDown = false;
-    player.aimStartedAt = 0;
+  if (sniperMoving && !wasSniperAimBlocked) {
+    player.aimStartedAt = now;
     player.mgBloomClock = 0;
     pushEvent(
       state,
@@ -1424,7 +1424,7 @@ function updatePlayer(state, player, dt, now) {
   player.sprinting =
     !sliding && Boolean(input.sprint) && moving && player.stamina > 0;
   const aimScale =
-    aimHeld && player.weapon === 'sniper'
+    aimHeld && player.weapon === 'sniper' && !sniperMoving
       ? lerp(1, weapon.moveAimScale, aimCharge)
       : 1;
   const carryScale = weapon.moveScale ?? 1;
@@ -1466,13 +1466,18 @@ function updatePlayer(state, player, dt, now) {
     player.pointerDown = false;
     player.aimStartedAt = 0;
     player.mgBloomClock = 0;
-  } else if (aimHeld && !sniperMoving && !player.pointerDown) {
+  } else if (aimHeld && !player.pointerDown) {
     player.pointerDown = true;
     player.aimStartedAt = now;
     pushEvent(state, { type: 'aim-start', shooter: player.id }, now);
   } else if (!aimHeld && player.pointerDown) {
     if (weapon.trigger === 'release') {
-      fireWeapon(state, player, now);
+      fireWeapon(
+        state,
+        player,
+        now,
+        weapon.id === 'sniper' && wasSniperAimBlocked,
+      );
     }
     player.pointerDown = false;
     player.aimStartedAt = 0;
@@ -1486,6 +1491,10 @@ function updatePlayer(state, player, dt, now) {
     player.nextFireAt <= now
   ) {
     fireWeapon(state, player, now);
+  }
+
+  if (sniperMoving && player.pointerDown) {
+    player.aimStartedAt = now;
   }
 
   if (

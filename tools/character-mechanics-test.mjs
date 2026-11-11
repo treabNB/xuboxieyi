@@ -272,16 +272,24 @@ function step(state, now, extra = {}) {
     weapon: 'sniper',
   });
   updateSimulation(state, 0.05, 1050);
-  assert.equal(alpha.pointerDown, false);
+  assert.equal(alpha.pointerDown, true);
   assert.equal(alpha.sniperAimBlocked, true);
   assert.equal(alpha.ammo.sniper, 5);
+
+  inputFor(state, alpha, bravo, {
+    pointerDown: false,
+    right: true,
+    weapon: 'sniper',
+  });
+  updateSimulation(state, 0.05, 1100);
+  assert.equal(alpha.ammo.sniper, 4);
 
   inputFor(state, alpha, bravo, {
     pointerDown: true,
     right: false,
     weapon: 'sniper',
   });
-  updateSimulation(state, 0.05, 1100);
+  updateSimulation(state, 0.05, 1150);
   assert.equal(alpha.pointerDown, true);
   assert.equal(alpha.sniperAimBlocked, false);
 }

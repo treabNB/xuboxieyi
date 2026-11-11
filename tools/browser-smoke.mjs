@@ -772,6 +772,7 @@ async function main() {
     );
   }
 
+  await new Promise((resolve) => setTimeout(resolve, 900));
   await send('Input.dispatchMouseEvent', {
     type: 'mousePressed',
     x: 1080,
@@ -816,9 +817,9 @@ async function main() {
     `window.__AFTERSHOT__.app.gameState.players.find((player) => player.id === window.__AFTERSHOT__.app.localPlayerId).ammo.sniper`,
   );
   if (
-    movingSniperState.pointerDown ||
+    !movingSniperState.pointerDown ||
     !movingSniperState.aimBlocked ||
-    movingSniperAmmo !== movingSniperState.ammo
+    movingSniperAmmo !== movingSniperState.ammo - 1
   ) {
     throw new Error(
       `Moving sniper aim was not reset: ${JSON.stringify({

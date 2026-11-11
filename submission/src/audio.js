@@ -5,6 +5,7 @@ export class GameAudio {
     this.noiseBuffer = null;
     this.enabled = true;
     this.eventCount = 0;
+    this.masterGain = 0.48;
   }
 
   unlock() {
@@ -18,7 +19,7 @@ export class GameAudio {
       }
       this.context = new AudioContext();
       this.master = this.context.createGain();
-      this.master.gain.value = 0.24;
+      this.master.gain.value = this.masterGain;
       this.master.connect(this.context.destination);
     }
     if (this.context.state === 'suspended') {
@@ -30,7 +31,7 @@ export class GameAudio {
     this.enabled = !this.enabled;
     if (this.master) {
       this.master.gain.setTargetAtTime(
-        this.enabled ? 0.24 : 0,
+        this.enabled ? this.masterGain : 0,
         this.context.currentTime,
         0.015,
       );

@@ -28,5 +28,5 @@
 - 职业技能不是卡片式说明墙：HUD 只保留职业名、被动摘要和两枚可执行技能槽，倒计时与读条直接改变槽位状态；成立。
 - 全屏白屏、燃烧红框、泄露提示和脚步图案都编码真实玩法状态，没有装饰性使用；`proof/long-falcon-abilities.png`、`proof/long-ash-abilities.png`、`proof/long-agent46-abilities.png` 与 `proof/footstep-directions.png` 已验证。
 - 终极技能不再显示无意义的倒计时数字，而用承伤驱动的 0–100% 能量条；只有实际损失生命才充能，护盾命中不计。
-- 音效来自 Web Audio 实时合成，没有为了“氛围”加载无职责的外部音频；关闭开关和实际 `AudioContext` 状态均通过浏览器验证。
+- 音效来自 Web Audio 实时合成，默认主增益为前版 200%，没有为了“氛围”加载无职责的外部音频；关闭开关、实际 `AudioContext` 状态和音量标签均通过浏览器验证。
 - 随机匹配复用现有 PeerJS 时间片公开池，并自动开局；没有伪装成本地随机人机或新增后台服务。
