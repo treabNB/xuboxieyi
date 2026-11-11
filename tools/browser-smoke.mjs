@@ -241,15 +241,35 @@ async function main() {
 
   const initial = await evaluate(`(() => {
     const app = window.__AFTERSHOT__.app;
+    const support = document.querySelector('#support-button');
+    const supportRect = support.getBoundingClientRect();
     return {
       view: app.view,
       playerCount: app.gameState.players.length,
       canvas: Boolean(document.querySelector('#game-canvas canvas')),
       title: document.querySelector('#entry-title')?.textContent,
+      support: {
+        href: support.href,
+        target: support.target,
+        rel: support.rel,
+        right: supportRect.right,
+        bottom: supportRect.bottom,
+        viewportWidth: innerWidth,
+        viewportHeight: innerHeight,
+      },
     };
   })()`);
   if (!initial.canvas || initial.view !== 'entry' || initial.playerCount !== 3) {
     throw new Error(`Initial state invalid: ${JSON.stringify(initial)}`);
+  }
+  if (
+    initial.support.href !== 'https://afdian.com/a/treab' ||
+    initial.support.target !== '_blank' ||
+    !initial.support.rel.includes('noopener') ||
+    initial.support.right > initial.support.viewportWidth ||
+    initial.support.bottom > initial.support.viewportHeight
+  ) {
+    throw new Error(`Support link invalid: ${JSON.stringify(initial.support)}`);
   }
   await captureScreenshot(path.join('proof', 'final-entry.png'));
   const difficultyStates = [];

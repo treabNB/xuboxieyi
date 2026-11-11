@@ -92,6 +92,7 @@ manifestations:
 | 人机难度 | 简单 / 普通 / 困难下拉选择 | 在入口选择难度并开始人机对战 | 选择持久化；AI 的瞄准误差、预判、移动和滑铲行为改变 | HTML select + simulation AI | 浏览器难度切换与固定时间步 AI 测试已验证 |
 | 对局与职业 | 选择快局、长局和职业 | 对局模式、三张职业卡、当前选择 | 快局隐藏职业；长局显示职业并在房间同步 | HTML/CSS + 房主权威 roster | 浏览器三职业切换、双端 long/falcon+ash 同步已验证 |
 | 随机匹配 | 自动加入当前公开匹配池 | “随机匹配”按钮、房间状态和自动开局倒计时 | 进入匹配池 → 至少两人 → 4 秒后自动开局 | PeerJS 确定性时间片房间 + 房主权威 | 双端真实 PeerJS 随机匹配已验证 |
+| 为我发电 | 从右下计分面板打开作者赞助页 | “为我发电 ↗”外部链接 | 新标签页打开 Afdian，不中断当前对局 | HTML 原生链接 + 浏览器安全属性 | 浏览器验证 href、`_blank`、`noopener noreferrer` 和视口内位置 |
 | 职业技能 HUD | 读取技能、次数、冷却和激活状态 | 当前职业、Q/E/X、两枚技能槽 | 普通状态 → 冷却/读条/激活/耗尽 | HTML/CSS + snapshot state | `proof/long-falcon-abilities.png`、`proof/long-ash-abilities.png`、`proof/long-agent46-abilities.png` |
 | 受击充能 | 让终极技能与承伤建立直接因果 | 终极技能槽能量百分比 | 0% → 受击增长 → 100% 就绪 → 释放清空 | simulation state + HTML/CSS meter | 单元测试验证实际伤害 1:1 充能，护盾伤害不计 |
 | 音效开关 | 控制枪战与技能听觉反馈 | 战术菜单中的“音效：开/关” | 播放枪声、技能、命中、换弹和脚步；关闭后静音 | Web Audio 本地合成 | 浏览器验证 AudioContext 实际运行且事件计数增加 |

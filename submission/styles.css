@@ -1376,11 +1376,31 @@ kbd {
 }
 
 .score-panel__heading {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 8px;
   align-items: baseline;
-  justify-content: space-between;
   color: var(--paper-dim);
   font-size: 9px;
+}
+
+.support-link {
+  justify-self: center;
+  min-height: 18px;
+  padding: 1px 4px;
+  color: var(--amber);
+  border-bottom: 1px solid rgba(243, 201, 105, 0.45);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.support-link:hover,
+.support-link:focus-visible {
+  color: var(--paper);
+  border-bottom-color: var(--paper);
 }
 
 .score-panel__heading strong {
